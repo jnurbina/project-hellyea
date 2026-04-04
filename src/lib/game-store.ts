@@ -172,9 +172,10 @@ interface GameStore {
 
   // Camera & animation
   cameraConfig: CameraConfig | null;
-  cameraConfigVersion: number;  // incremented to force useEffect trigger
+  cameraConfigVersion: number;
   moveAnimation: MoveAnimation | null;
-  onCameraArrived: (() => void) | null; // callback when camera finishes transition
+  onCameraArrived: (() => void) | null;
+  missIndicator: { q: number; r: number } | null; // flash 'MISS' on this tile
 
   // Actions
   initGame: (mapWidth?: number, mapHeight?: number) => void;
@@ -225,6 +226,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
   cameraConfigVersion: 0,
   moveAnimation: null,
   onCameraArrived: null,
+  missIndicator: null,
 
   initGame: (mapWidth = 20, mapHeight = 20) => {
     const grid = generateGrid(mapWidth, mapHeight, Date.now());
@@ -524,16 +526,19 @@ export const useGameStore = create<GameStore>((set, get) => ({
             const damage = Math.max(1, attacker.stats.atk - target.stats.def);
             target.stats.hp -= damage;
             if (target.stats.hp <= 0) { target.stats.hp = 0; target.alive = false; }
+            attacker.hasAttacked = true;
+            set({ gameState: gs });
+          } else {
+            // Miss! Show indicator
+            attacker.hasAttacked = true;
+            set({ gameState: gs, missIndicator: { q: targetTile.q, r: targetTile.r } });
           }
-          // Miss or hit, attacker used their attack
-          attacker.hasAttacked = true;
-          set({ gameState: gs });
 
-          // Hold so player sees result
+          // Hold so player sees result, then clear and advance
           setTimeout(() => {
-            set({ resolutionIndex: resolutionIndex + 1, targetHeroId: null, selectedHeroId: null });
+            set({ resolutionIndex: resolutionIndex + 1, targetHeroId: null, selectedHeroId: null, missIndicator: null });
             setTimeout(() => get().processNextResolution(), 500);
-          }, target ? 1000 : 500); // shorter hold on miss
+          }, target ? 1000 : 1200); // longer hold on miss so they can read it
         }, 300);
       },
     });

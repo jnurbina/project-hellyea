@@ -196,13 +196,8 @@ export function octileDistance(q1: number, r1: number, q2: number, r2: number): 
 /**
  * Line of sight using Bresenham's adapted for octile grid
  */
-export function hasLineOfSight(grid: Tile[][], q1: number, r1: number, q2: number, r2: number): boolean {
-  const tiles = bresenhamLine(q1, r1, q2, r2);
-  for (let i = 1; i < tiles.length - 1; i++) { // skip start and end
-    const { q, r } = tiles[i];
-    if (r < 0 || r >= grid.length || q < 0 || q >= grid[0].length) return false;
-    if (TERRAIN_CONFIG[grid[r][q].terrain].blocksLoS) return false;
-  }
+export function hasLineOfSight(_grid: Tile[][], _q1: number, _r1: number, _q2: number, _r2: number): boolean {
+  // LOS disabled for prototype — everything is visible
   return true;
 }
 
@@ -224,7 +219,7 @@ export function calculateVisibility(grid: Tile[][], q: number, r: number, range:
     for (const point of line) {
       if (point.r < 0 || point.r >= grid.length || point.q < 0 || point.q >= grid[0].length) break;
       visible.add(`${point.q},${point.r}`);
-      if (TERRAIN_CONFIG[grid[point.r][point.q].terrain].blocksLoS && !(point.q === q && point.r === r)) break;
+      // LOS blocking disabled for prototype
     }
   }
   

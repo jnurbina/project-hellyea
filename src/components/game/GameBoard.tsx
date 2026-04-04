@@ -28,12 +28,15 @@ function CameraController() {
 
   const ELEVATION = 12;
 
-  // When store pushes a new cameraConfig, snap to it
-  // Uses version counter to guarantee useEffect fires on every update
+  // When store pushes a new cameraConfig, start animating.
+  // Uses version counter so useEffect fires on every config push.
+  const pendingAnimRef = useRef(false);
   useEffect(() => {
     if (!cameraConfig) return;
     animTargetRef.current = { ...cameraConfig, target: cameraConfig.target.clone() };
-    animatingRef.current = true;
+    // Set a pending flag; the useFrame loop will pick it up.
+    // This avoids race conditions with mouse handlers clearing animatingRef.
+    pendingAnimRef.current = true;
   }, [cameraConfigVersion]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -116,6 +119,12 @@ function CameraController() {
     }
     if (keys.has('q')) angleRef.current -= 0.02;
     if (keys.has('e')) angleRef.current += 0.02;
+
+    // Pick up pending animation (set by useEffect, immune to mouse race)
+    if (pendingAnimRef.current) {
+      pendingAnimRef.current = false;
+      animatingRef.current = true;
+    }
 
     // Smooth camera animation — actually reaches the target
     if (animatingRef.current && animTargetRef.current) {
@@ -259,6 +268,7 @@ function GameScene() {
   const currentPath = useGameStore(s => s.currentPath);
   const pendingTarget = useGameStore(s => s.pendingTarget);
   const moveAnimation = useGameStore(s => s.moveAnimation);
+  const missIndicator = useGameStore(s => s.missIndicator);
   const planningPlayerId = useGameStore(s => s.planningPlayerId);
   const queuedActions = useGameStore(s => s.queuedActions);
   const phase = useGameStore(s => s.phase);
@@ -362,6 +372,17 @@ function GameScene() {
       )}
 
       {moveAnimation && <AnimatedHero animation={moveAnimation} />}
+
+      {/* Miss indicator */}
+      {missIndicator && (
+        <group position={[missIndicator.q, 0.5, missIndicator.r]}>
+          <Html center style={{ pointerEvents: 'none' }}>
+            <div className="text-red-400 font-bold text-lg animate-bounce select-none" style={{ textShadow: '0 0 8px rgba(0,0,0,0.8), 0 0 4px rgba(255,0,0,0.3)' }}>
+              MISS!
+            </div>
+          </Html>
+        </group>
+      )}
     </>
   );
 }
