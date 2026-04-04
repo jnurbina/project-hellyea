@@ -1,48 +1,35 @@
 'use client';
 
-import { useMemo, useRef, useEffect, useCallback, useState } from 'react';
+import { useMemo, useRef, useEffect, useState } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrthographicCamera } from '@react-three/drei';
 import * as THREE from 'three';
-import { useGameStore, CameraConfig } from '@/lib/game-store';
+import { useGameStore, CameraConfig, MoveAnimation } from '@/lib/game-store';
 import { octileDistance } from '@/lib/grid';
 import OctileTileMesh from './OctileTile';
 
-/**
- * Full camera controller:
- * - Animates to store's cameraConfig on turn change
- * - Left-drag rotates, right-drag pans, scroll zooms
- * - WASD pans, QE rotates (all relative to current angle)
- * - User input interrupts the snap animation
- */
+// === Camera Controller ===
+
 function CameraController() {
   const { camera, gl } = useThree();
   const cameraConfig = useGameStore(s => s.cameraConfig);
 
-  // Live camera state (refs so they persist across frames without re-renders)
   const targetRef = useRef(new THREE.Vector3(10, 0, 10));
   const angleRef = useRef(Math.PI / 4);
-  const zoomRef = useRef(60);
-  const distanceRef = useRef(15);
+  const zoomRef = useRef(120);
+  const distanceRef = useRef(12);
 
-  // Animation state
   const animatingRef = useRef(false);
   const animTargetRef = useRef<CameraConfig | null>(null);
   const animProgressRef = useRef(0);
 
-  // Input state
   const keysRef = useRef<Set<string>>(new Set());
   const isDraggingRef = useRef<'left' | 'right' | null>(null);
   const lastMouseRef = useRef({ x: 0, y: 0 });
   const dragDistRef = useRef(0);
 
-  const PAN_SPEED = 0.3;
-  const ROTATE_SPEED = 0.02;
-  const MOUSE_ROTATE_SPEED = 0.008;
-  const MOUSE_PAN_SPEED = 0.05;
-  const ELEVATION = 15;
+  const ELEVATION = 12;
 
-  // When store pushes a new cameraConfig, start animating toward it
   useEffect(() => {
     if (!cameraConfig) return;
     animTargetRef.current = cameraConfig;
@@ -50,7 +37,6 @@ function CameraController() {
     animatingRef.current = true;
   }, [cameraConfig]);
 
-  // Expose camera state for debug overlay + drag state for click suppression
   useEffect(() => {
     (window as any).__cameraDragDist = dragDistRef;
     (window as any).__cameraDebug = { targetRef, angleRef, zoomRef, distanceRef };
@@ -58,16 +44,13 @@ function CameraController() {
 
   useEffect(() => {
     const canvas = gl.domElement;
-
-    const onKeyDown = (e: KeyboardEvent) => { keysRef.current.add(e.key.toLowerCase()); };
-    const onKeyUp = (e: KeyboardEvent) => { keysRef.current.delete(e.key.toLowerCase()); };
-
+    const onKeyDown = (e: KeyboardEvent) => keysRef.current.add(e.key.toLowerCase());
+    const onKeyUp = (e: KeyboardEvent) => keysRef.current.delete(e.key.toLowerCase());
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
-      animatingRef.current = false; // user took control
-      zoomRef.current = Math.max(20, Math.min(120, zoomRef.current - e.deltaY * 0.08));
+      animatingRef.current = false;
+      zoomRef.current = Math.max(30, Math.min(200, zoomRef.current - e.deltaY * 0.15));
     };
-
     const onMouseDown = (e: MouseEvent) => {
       if (e.button === 0) isDraggingRef.current = 'left';
       else if (e.button === 2) isDraggingRef.current = 'right';
@@ -81,24 +64,18 @@ function CameraController() {
       const dy = e.clientY - lastMouseRef.current.y;
       lastMouseRef.current = { x: e.clientX, y: e.clientY };
       dragDistRef.current += Math.abs(dx) + Math.abs(dy);
-
-      animatingRef.current = false; // user took control
-
+      animatingRef.current = false;
       if (drag === 'left') {
-        angleRef.current -= dx * MOUSE_ROTATE_SPEED;
+        angleRef.current -= dx * 0.008;
       } else {
-        const angle = angleRef.current;
-        const rightX = Math.cos(angle);
-        const rightZ = -Math.sin(angle);
-        const forwardX = -Math.sin(angle);
-        const forwardZ = -Math.cos(angle);
-        const zf = MOUSE_PAN_SPEED / (zoomRef.current * 0.02);
-        targetRef.current.x -= (dx * rightX + dy * forwardX) * zf;
-        targetRef.current.z -= (dx * rightZ + dy * forwardZ) * zf;
+        const a = angleRef.current;
+        const zf = 0.04 / (zoomRef.current * 0.015);
+        targetRef.current.x -= (dx * Math.cos(a) + dy * -Math.sin(a)) * zf;
+        targetRef.current.z -= (dx * -Math.sin(a) + dy * -Math.cos(a)) * zf;
       }
     };
     const onMouseUp = () => { isDraggingRef.current = null; };
-    const onContextMenu = (e: MouseEvent) => { e.preventDefault(); };
+    const onCtx = (e: MouseEvent) => e.preventDefault();
 
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
@@ -106,7 +83,7 @@ function CameraController() {
     canvas.addEventListener('mousedown', onMouseDown);
     window.addEventListener('mousemove', onMouseMove);
     window.addEventListener('mouseup', onMouseUp);
-    canvas.addEventListener('contextmenu', onContextMenu);
+    canvas.addEventListener('contextmenu', onCtx);
     return () => {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
@@ -114,46 +91,36 @@ function CameraController() {
       canvas.removeEventListener('mousedown', onMouseDown);
       window.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('mouseup', onMouseUp);
-      canvas.removeEventListener('contextmenu', onContextMenu);
+      canvas.removeEventListener('contextmenu', onCtx);
     };
   }, [camera, gl]);
 
   useFrame((_, delta) => {
     const keys = keysRef.current;
-
-    // WASD/QE interrupts animation
     if (keys.size > 0) animatingRef.current = false;
+    const a = angleRef.current;
+    const spd = 0.3;
+    if (keys.has('w')) { targetRef.current.x += -Math.sin(a) * spd; targetRef.current.z += -Math.cos(a) * spd; }
+    if (keys.has('s')) { targetRef.current.x -= -Math.sin(a) * spd; targetRef.current.z -= -Math.cos(a) * spd; }
+    if (keys.has('a')) { targetRef.current.x -= Math.cos(a) * spd; targetRef.current.z -= -Math.sin(a) * spd; }
+    if (keys.has('d')) { targetRef.current.x += Math.cos(a) * spd; targetRef.current.z += -Math.sin(a) * spd; }
+    if (keys.has('q')) angleRef.current -= 0.02;
+    if (keys.has('e')) angleRef.current += 0.02;
 
-    // Keyboard controls
-    const angle = angleRef.current;
-    const fX = -Math.sin(angle), fZ = -Math.cos(angle);
-    const rX = Math.cos(angle), rZ = -Math.sin(angle);
-    if (keys.has('w')) { targetRef.current.x += fX * PAN_SPEED; targetRef.current.z += fZ * PAN_SPEED; }
-    if (keys.has('s')) { targetRef.current.x -= fX * PAN_SPEED; targetRef.current.z -= fZ * PAN_SPEED; }
-    if (keys.has('a')) { targetRef.current.x -= rX * PAN_SPEED; targetRef.current.z -= rZ * PAN_SPEED; }
-    if (keys.has('d')) { targetRef.current.x += rX * PAN_SPEED; targetRef.current.z += rZ * PAN_SPEED; }
-    if (keys.has('q')) angleRef.current -= ROTATE_SPEED;
-    if (keys.has('e')) angleRef.current += ROTATE_SPEED;
-
-    // Snap animation (smooth lerp toward target config)
     if (animatingRef.current && animTargetRef.current) {
       animProgressRef.current = Math.min(1, animProgressRef.current + delta * 2.5);
-      const t = smoothstep(animProgressRef.current);
-
-      targetRef.current.lerp(animTargetRef.current.target, t * 0.15);
-      angleRef.current = THREE.MathUtils.lerp(angleRef.current, animTargetRef.current.angle, t * 0.15);
-      zoomRef.current = THREE.MathUtils.lerp(zoomRef.current, animTargetRef.current.zoom, t * 0.15);
-
+      const t = animProgressRef.current * animProgressRef.current * (3 - 2 * animProgressRef.current) * 0.15;
+      targetRef.current.lerp(animTargetRef.current.target, t);
+      angleRef.current = THREE.MathUtils.lerp(angleRef.current, animTargetRef.current.angle, t);
+      zoomRef.current = THREE.MathUtils.lerp(zoomRef.current, animTargetRef.current.zoom, t);
       if (animProgressRef.current >= 1) animatingRef.current = false;
     }
 
-    // Apply to camera
     const ortho = camera as THREE.OrthographicCamera;
-    const dist = distanceRef.current;
     camera.position.set(
-      targetRef.current.x + Math.sin(angleRef.current) * dist,
+      targetRef.current.x + Math.sin(angleRef.current) * distanceRef.current,
       ELEVATION,
-      targetRef.current.z + Math.cos(angleRef.current) * dist
+      targetRef.current.z + Math.cos(angleRef.current) * distanceRef.current
     );
     camera.lookAt(targetRef.current);
     ortho.zoom = zoomRef.current;
@@ -163,27 +130,70 @@ function CameraController() {
   return null;
 }
 
-function smoothstep(t: number) {
-  return t * t * (3 - 2 * t);
+// === Animated Hero Mesh ===
+
+function AnimatedHero({ animation }: { animation: MoveAnimation }) {
+  const meshRef = useRef<THREE.Group>(null);
+  const tickMoveAnimation = useGameStore(s => s.tickMoveAnimation);
+
+  useFrame((_, delta) => {
+    const anim = useGameStore.getState().moveAnimation;
+    if (!anim || !meshRef.current) return;
+
+    const from = anim.path[anim.currentIndex];
+    const to = anim.path[Math.min(anim.currentIndex + 1, anim.path.length - 1)];
+    const t = anim.progress;
+    const x = from.q + (to.q - from.q) * t;
+    const z = from.r + (to.r - from.r) * t;
+    // Add a little bounce
+    const bounce = Math.sin(t * Math.PI) * 0.15;
+    meshRef.current.position.set(x, bounce + 0.15, z);
+
+    tickMoveAnimation(delta);
+  });
+
+  const hero = useGameStore.getState().gameState
+    ? Object.values(useGameStore.getState().gameState!.players)
+        .flatMap(p => p.heroes)
+        .find(h => h.id === animation.heroId)
+    : null;
+
+  const color = hero?.owner === 'player1' ? '#00ccff' : '#ff4444';
+
+  return (
+    <group ref={meshRef} position={[animation.path[0].q, 0.15, animation.path[0].r]}>
+      <mesh position={[0, 0.2, 0]}>
+        <capsuleGeometry args={[0.12, 0.25, 4, 8]} />
+        <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.5} roughness={0.3} />
+      </mesh>
+      <mesh position={[0, 0.01, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+        <ringGeometry args={[0.15, 0.22, 16]} />
+        <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.7} transparent opacity={0.5} />
+      </mesh>
+    </group>
+  );
 }
+
+// === Game Scene ===
 
 function GameScene() {
   const gameState = useGameStore(s => s.gameState);
-  const selectedHero = useGameStore(s => s.selectedHero);
+  const activeHeroId = useGameStore(s => s.activeHeroId);
+  const actionMode = useGameStore(s => s.actionMode);
+  const moveTiles = useGameStore(s => s.moveTiles);
+  const attackTiles = useGameStore(s => s.attackTiles);
   const hoveredTile = useGameStore(s => s.hoveredTile);
   const currentPath = useGameStore(s => s.currentPath);
-  const activePlayerId = useGameStore(s => s.activePlayerId);
-  const selectHero = useGameStore(s => s.selectHero);
+  const pendingTarget = useGameStore(s => s.pendingTarget);
+  const moveAnimation = useGameStore(s => s.moveAnimation);
+  const handleTileClick = useGameStore(s => s.handleTileClick);
   const setHoveredTile = useGameStore(s => s.setHoveredTile);
   const clearHover = useGameStore(s => s.clearHover);
-  const moveHero = useGameStore(s => s.moveHero);
-  const attackHero = useGameStore(s => s.attackHero);
 
   const allHeroes = useMemo(() =>
     gameState ? Object.values(gameState.players).flatMap(p => [...p.heroes]) : [],
     [gameState]
   );
-  const selectedHeroData = allHeroes.find(h => h.id === selectedHero);
 
   const pathSet = useMemo(() => {
     if (!currentPath) return new Set<string>();
@@ -194,33 +204,37 @@ function GameScene() {
     const map = new Map<string, { heroId: string; color: string; owner: string }>();
     allHeroes.forEach(hero => {
       if (!hero.alive) return;
+      // Don't render the hero at its old position if it's being animated
+      if (moveAnimation?.heroId === hero.id) return;
       const key = `${hero.position.q},${hero.position.r}`;
       const color = hero.owner === 'player1' ? '#00ccff' : '#ff4444';
       map.set(key, { heroId: hero.id, color, owner: hero.owner });
     });
     return map;
-  }, [allHeroes]);
+  }, [allHeroes, moveAnimation]);
 
   if (!gameState) return null;
 
   const { grid, mapWidth, mapHeight } = gameState;
+  const activeHero = allHeroes.find(h => h.id === activeHeroId);
 
   return (
     <>
-      <OrthographicCamera makeDefault zoom={60} position={[10, 15, 30]} />
+      <OrthographicCamera makeDefault zoom={120} position={[10, 12, 25]} />
       <CameraController />
 
-      {/* Lighting — noir */}
-      <ambientLight intensity={0.3} color="#445566" />
-      <directionalLight position={[15, 25, 10]} intensity={0.8} color="#99aacc" />
-      <directionalLight position={[-10, 15, -10]} intensity={0.3} color="#334455" />
+      {/* Lighting — brighter for visibility */}
+      <ambientLight intensity={0.5} color="#667788" />
+      <directionalLight position={[20, 30, 15]} intensity={1.0} color="#aabbcc" />
+      <directionalLight position={[-15, 20, -10]} intensity={0.4} color="#556677" />
+      <hemisphereLight color="#556677" groundColor="#222233" intensity={0.3} />
 
-      <fog attach="fog" args={['#0a0c10', 40, 80]} />
+      {/* NO fog — it was eating the scene */}
 
       {/* Ground plane — gun-metal grey */}
-      <mesh position={[mapWidth / 2 - 0.5, -0.15, mapHeight / 2 - 0.5]} rotation={[-Math.PI / 2, 0, 0]}>
-        <planeGeometry args={[mapWidth + 20, mapHeight + 20]} />
-        <meshStandardMaterial color="#25272b" roughness={0.85} metalness={0.15} />
+      <mesh position={[mapWidth / 2 - 0.5, -0.2, mapHeight / 2 - 0.5]} rotation={[-Math.PI / 2, 0, 0]}>
+        <planeGeometry args={[mapWidth + 30, mapHeight + 30]} />
+        <meshStandardMaterial color="#2a2c30" roughness={0.8} metalness={0.2} />
       </mesh>
 
       {/* Grid */}
@@ -228,12 +242,10 @@ function GameScene() {
         row.map((tile, q) => {
           const tileKey = `${q},${r}`;
           const heroOnTile = heroPositions.get(tileKey);
-
-          let isAttackable = false;
-          if (selectedHeroData && heroOnTile && heroOnTile.owner !== activePlayerId && !selectedHeroData.hasAttacked) {
-            const dist = octileDistance(selectedHeroData.position.q, selectedHeroData.position.r, q, r);
-            if (dist <= selectedHeroData.stats.rng) isAttackable = true;
-          }
+          const isMoveRange = moveTiles.has(tileKey);
+          const isAttackRange = attackTiles.has(tileKey);
+          const isPending = pendingTarget?.q === q && pendingTarget?.r === r;
+          const isActiveHero = heroOnTile?.heroId === activeHeroId;
 
           return (
             <OctileTileMesh
@@ -241,21 +253,16 @@ function GameScene() {
               tile={tile}
               isHighlighted={hoveredTile?.q === q && hoveredTile?.r === r}
               isPath={pathSet.has(tileKey)}
-              isSelected={heroOnTile?.heroId === selectedHero}
+              isSelected={isActiveHero}
               hasHero={!!heroOnTile && tile.visible === 'visible'}
               heroColor={heroOnTile?.color}
-              isEnemy={!!heroOnTile && heroOnTile.owner !== activePlayerId}
-              isAttackable={isAttackable}
+              isEnemy={!!heroOnTile && heroOnTile.owner !== activeHero?.owner}
+              isMoveRange={isMoveRange}
+              isAttackRange={isAttackRange}
+              isPending={isPending}
               onClick={() => {
-                // Suppress clicks if user was dragging
                 if (((window as any).__cameraDragDist?.current ?? 0) > 8) return;
-                if (isAttackable && selectedHero) {
-                  attackHero(selectedHero, heroOnTile!.heroId);
-                } else if (heroOnTile && heroOnTile.owner === activePlayerId) {
-                  selectHero(heroOnTile.heroId);
-                } else if (selectedHero) {
-                  moveHero(selectedHero, q, r);
-                }
+                handleTileClick(q, r);
               }}
               onPointerEnter={() => setHoveredTile(q, r)}
               onPointerLeave={clearHover}
@@ -263,72 +270,62 @@ function GameScene() {
           );
         })
       )}
+
+      {/* Move animation */}
+      {moveAnimation && <AnimatedHero animation={moveAnimation} />}
     </>
   );
 }
 
+// === Debug Overlay ===
+
 function DebugOverlay() {
   const [stats, setStats] = useState({ x: 0, z: 0, angle: 0, zoom: 0, dist: 0 });
-
   useEffect(() => {
-    const interval = setInterval(() => {
-      const dbg = (window as any).__cameraDebug;
-      if (!dbg) return;
-      setStats({
-        x: dbg.targetRef.current.x,
-        z: dbg.targetRef.current.z,
-        angle: ((dbg.angleRef.current * 180 / Math.PI) % 360),
-        zoom: dbg.zoomRef.current,
-        dist: dbg.distanceRef.current,
-      });
+    const iv = setInterval(() => {
+      const d = (window as any).__cameraDebug;
+      if (!d) return;
+      setStats({ x: d.targetRef.current.x, z: d.targetRef.current.z, angle: (d.angleRef.current * 180 / Math.PI) % 360, zoom: d.zoomRef.current, dist: d.distanceRef.current });
     }, 200);
-    return () => clearInterval(interval);
+    return () => clearInterval(iv);
   }, []);
-
-  const gameState = useGameStore(s => s.gameState);
-  const activePlayerId = useGameStore(s => s.activePlayerId);
+  const gs = useGameStore(s => s.gameState);
+  const activeHeroId = useGameStore(s => s.activeHeroId);
+  const round = useGameStore(s => s.round);
+  const initiativeOrder = useGameStore(s => s.initiativeOrder);
+  const initiativeIndex = useGameStore(s => s.initiativeIndex);
 
   return (
-    <div className="absolute top-4 right-4 z-50 pointer-events-none">
-      <div className="bg-black/70 border border-gray-700 rounded px-3 py-2 font-mono text-[10px] text-gray-400 space-y-0.5 min-w-[180px]">
+    <div className="absolute top-16 right-4 z-50 pointer-events-none">
+      <div className="bg-black/80 border border-gray-700 rounded px-3 py-2 font-mono text-[10px] text-gray-400 space-y-0.5 min-w-[200px]">
         <div className="text-gray-500 font-bold mb-1">DEBUG</div>
-        <div>cam.target: ({stats.x.toFixed(1)}, {stats.z.toFixed(1)})</div>
-        <div>cam.angle: {stats.angle.toFixed(1)}°</div>
-        <div>cam.zoom: {stats.zoom.toFixed(1)}</div>
-        <div>cam.dist: {stats.dist.toFixed(1)}</div>
-        {gameState && <>
-          <div className="border-t border-gray-800 mt-1 pt-1">round: {gameState.turn}</div>
-          <div>active: {activePlayerId}</div>
-          <div>phase: {gameState.phase}</div>
-          <div>heroes: {Object.values(gameState.players).flatMap(p => p.heroes).filter(h => h.alive).length} alive</div>
-        </>}
+        <div>cam: ({stats.x.toFixed(1)}, {stats.z.toFixed(1)}) ∠{stats.angle.toFixed(0)}° z{stats.zoom.toFixed(0)}</div>
+        <div className="border-t border-gray-800 mt-1 pt-1">round: {round} | init: {initiativeIndex + 1}/{initiativeOrder.length}</div>
+        <div>active: {activeHeroId}</div>
+        <div>order: {initiativeOrder.join(' → ')}</div>
+        {gs && <div>alive: {Object.values(gs.players).flatMap(p => p.heroes).filter(h => h.alive).length}/4</div>}
       </div>
     </div>
   );
 }
 
+// === Root ===
+
 export default function GameBoard() {
   const [showDebug, setShowDebug] = useState(false);
-
   useEffect(() => {
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key === '`' || e.key === '~') {
-        e.preventDefault();
-        setShowDebug(prev => !prev);
-      }
-    };
-    window.addEventListener('keydown', handleKey);
-    return () => window.removeEventListener('keydown', handleKey);
+    const h = (e: KeyboardEvent) => { if (e.key === '`' || e.key === '~') { e.preventDefault(); setShowDebug(p => !p); } };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
   }, []);
 
   return (
-    <div className="w-full h-full bg-[#0a0c10] relative">
+    <div className="w-full h-full bg-[#1a1c20] relative">
       <Canvas>
         <GameScene />
       </Canvas>
       {showDebug && <DebugOverlay />}
-      {/* Debug toggle hint */}
-      <div className="absolute bottom-2 right-2 text-gray-700 text-[9px] font-mono pointer-events-none">Press ` for debug</div>
+      <div className="absolute bottom-2 right-2 text-gray-600 text-[9px] font-mono pointer-events-none">` debug</div>
     </div>
   );
 }

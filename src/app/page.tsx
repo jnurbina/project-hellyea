@@ -32,7 +32,7 @@ export default function Home() {
           >
             Start Game
           </button>
-          <p className="text-gray-600 text-[10px] mt-4 font-mono">20×20 • 2 Heroes • Local Prototype</p>
+          <p className="text-gray-600 text-[10px] mt-4 font-mono">20×20 • 4 Heroes • Hero Initiative • Pass &amp; Play</p>
         </div>
       </div>
     );

@@ -1,11 +1,12 @@
-// === Game State Store (Zustand) ===
+// === Game State Store (Zustand) — Hero Initiative System ===
 
 import { create } from 'zustand';
 import * as THREE from 'three';
-import { GameState, Hero, TurnAction, Tile, Player, HeroStats, TERRAIN_CONFIG } from './types';
+import { GameState, Hero, Tile, Player, HeroStats, TERRAIN_CONFIG } from './types';
 import { generateGrid, findPath, calculateVisibility, octileDistance } from './grid';
 
-// Deep-clone game state so Zustand detects changes in nested hero positions etc.
+// === Helpers ===
+
 function cloneGameState(gs: GameState): GameState {
   return {
     ...gs,
@@ -23,7 +24,6 @@ function cloneGameState(gs: GameState): GameState {
   };
 }
 
-/** Get set of all tiles occupied by living heroes (except excludeId) */
 function getOccupiedTiles(gs: GameState, excludeId?: string): Set<string> {
   const occupied = new Set<string>();
   for (const player of Object.values(gs.players)) {
@@ -35,15 +35,113 @@ function getOccupiedTiles(gs: GameState, excludeId?: string): Set<string> {
   return occupied;
 }
 
-const getPlayerHeroMidpoint = (player: Player): THREE.Vector3 => {
-  const living = player.heroes.filter(h => h.alive);
-  if (living.length === 0) return new THREE.Vector3();
-  const sum = living.reduce(
-    (acc, h) => acc.add(new THREE.Vector3(h.position.q, 0, h.position.r)),
-    new THREE.Vector3()
-  );
-  return sum.divideScalar(living.length);
-};
+function getAllHeroes(gs: GameState): Hero[] {
+  return Object.values(gs.players).flatMap(p => [...p.heroes]);
+}
+
+function findHero(gs: GameState, heroId: string): Hero | undefined {
+  return getAllHeroes(gs).find(h => h.id === heroId);
+}
+
+/** Build the initiative order: all living heroes sorted by SPD descending */
+function buildInitiativeOrder(gs: GameState): string[] {
+  return getAllHeroes(gs)
+    .filter(h => h.alive)
+    .sort((a, b) => b.stats.spd - a.stats.spd)
+    .map(h => h.id);
+}
+
+/** Compute all tiles reachable by a hero within their MOV range */
+function computeMoveTiles(gs: GameState, hero: Hero): Set<string> {
+  const reachable = new Set<string>();
+  const occupied = getOccupiedTiles(gs, hero.id);
+  const grid = gs.grid;
+  const mov = hero.stats.mov;
+
+  // BFS with cost tracking
+  const costs = new Map<string, number>();
+  const queue: { q: number; r: number; cost: number }[] = [{ q: hero.position.q, r: hero.position.r, cost: 0 }];
+  const startKey = `${hero.position.q},${hero.position.r}`;
+  costs.set(startKey, 0);
+
+  const DIRS = [
+    { dq: 0, dr: -1 }, { dq: 1, dr: -1 }, { dq: 1, dr: 0 }, { dq: 1, dr: 1 },
+    { dq: 0, dr: 1 }, { dq: -1, dr: 1 }, { dq: -1, dr: 0 }, { dq: -1, dr: -1 },
+  ];
+
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    for (const dir of DIRS) {
+      const nq = current.q + dir.dq;
+      const nr = current.r + dir.dr;
+      if (nr < 0 || nr >= grid.length || nq < 0 || nq >= grid[0].length) continue;
+      const nKey = `${nq},${nr}`;
+      if (occupied.has(nKey)) continue;
+      const tile = grid[nr][nq];
+      const base = TERRAIN_CONFIG[tile.terrain].moveCost;
+      if (base >= 99) continue;
+      const isDiag = dir.dq !== 0 && dir.dr !== 0;
+      const stepCost = base * (isDiag ? 1.414 : 1);
+      const totalCost = current.cost + stepCost;
+      if (totalCost > mov) continue;
+      if (costs.has(nKey) && costs.get(nKey)! <= totalCost) continue;
+      costs.set(nKey, totalCost);
+      reachable.add(nKey);
+      queue.push({ q: nq, r: nr, cost: totalCost });
+    }
+  }
+  return reachable;
+}
+
+/** Compute all tiles attackable by a hero within range, checking LoS */
+function computeAttackTiles(gs: GameState, hero: Hero): Set<string> {
+  const attackable = new Set<string>();
+  const grid = gs.grid;
+  const rng = hero.stats.rng;
+  const hq = hero.position.q;
+  const hr = hero.position.r;
+
+  for (let r = 0; r < grid.length; r++) {
+    for (let q = 0; q < grid[0].length; q++) {
+      if (q === hq && r === hr) continue;
+      const dist = octileDistance(hq, hr, q, r);
+      if (dist > rng) continue;
+      // Check if tile has an enemy hero
+      const hasEnemy = getAllHeroes(gs).some(
+        h => h.alive && h.owner !== hero.owner && h.position.q === q && h.position.r === r
+      );
+      if (!hasEnemy) continue;
+      attackable.add(`${q},${r}`);
+    }
+  }
+  return attackable;
+}
+
+export function truncatePathToMovement(
+  path: { q: number; r: number }[],
+  grid: Tile[][],
+  maxMov: number
+): { q: number; r: number }[] {
+  if (path.length <= 1) return path;
+  const result = [path[0]];
+  let spent = 0;
+  for (let i = 1; i < path.length; i++) {
+    const prev = path[i - 1];
+    const cur = path[i];
+    const tile = grid[cur.r][cur.q];
+    const base = TERRAIN_CONFIG[tile.terrain].moveCost;
+    const isDiag = prev.q !== cur.q && prev.r !== cur.r;
+    const cost = base * (isDiag ? 1.414 : 1);
+    if (spent + cost > maxMov) break;
+    spent += cost;
+    result.push(cur);
+  }
+  return result;
+}
+
+// === Store Types ===
+
+export type ActionMode = 'idle' | 'move' | 'attack';
 
 export interface CameraConfig {
   target: THREE.Vector3;
@@ -51,24 +149,47 @@ export interface CameraConfig {
   zoom: number;
 }
 
+export interface MoveAnimation {
+  heroId: string;
+  path: { q: number; r: number }[];
+  currentIndex: number;
+  progress: number; // 0-1 between currentIndex and next
+}
+
 interface GameStore {
   gameState: GameState | null;
-  activePlayerId: string | null;
-  turnOrder: string[];
-  selectedHero: string | null;
+  
+  // Initiative system
+  initiativeOrder: string[];    // hero IDs sorted by SPD
+  initiativeIndex: number;      // current position in the order
+  activeHeroId: string | null;  // hero whose turn it is
+  round: number;
+  
+  // UI state
+  actionMode: ActionMode;
+  moveTiles: Set<string>;       // green range preview
+  attackTiles: Set<string>;     // red range preview
   hoveredTile: { q: number; r: number } | null;
   currentPath: { q: number; r: number }[] | null;
+  pendingTarget: { q: number; r: number } | null;  // first click location
+  targetHeroId: string | null;  // hero being targeted (for bottom-right panel)
+  
+  // Camera
   cameraConfig: CameraConfig | null;
-
+  
+  // Animation
+  moveAnimation: MoveAnimation | null;
+  
+  // Actions
   initGame: (mapWidth?: number, mapHeight?: number) => void;
-  selectHero: (heroId: string | null) => void;
+  setActionMode: (mode: ActionMode) => void;
   setHoveredTile: (q: number, r: number) => void;
   clearHover: () => void;
-  moveHero: (heroId: string, q: number, r: number) => void;
-  attackHero: (attackerId: string, targetId: string) => void;
-  endTurn: () => void;
+  handleTileClick: (q: number, r: number) => void;
+  advanceTurn: () => void;
   updateVisibility: () => void;
   focusHero: (heroId: string) => void;
+  tickMoveAnimation: (delta: number) => boolean; // returns true if still animating
 }
 
 const DEFAULT_HEROES: { name: string; lore: string; archetype: Hero['archetype']; stats: HeroStats }[] = [
@@ -80,12 +201,19 @@ const DEFAULT_HEROES: { name: string; lore: string; archetype: Hero['archetype']
 
 export const useGameStore = create<GameStore>((set, get) => ({
   gameState: null,
-  activePlayerId: null,
-  turnOrder: [],
-  selectedHero: null,
+  initiativeOrder: [],
+  initiativeIndex: 0,
+  activeHeroId: null,
+  round: 1,
+  actionMode: 'idle',
+  moveTiles: new Set(),
+  attackTiles: new Set(),
   hoveredTile: null,
   currentPath: null,
+  pendingTarget: null,
+  targetHeroId: null,
   cameraConfig: null,
+  moveAnimation: null,
 
   initGame: (mapWidth = 20, mapHeight = 20) => {
     const grid = generateGrid(mapWidth, mapHeight, Date.now());
@@ -109,183 +237,215 @@ export const useGameStore = create<GameStore>((set, get) => ({
       }
     };
 
-    // Fastest hero determines first player
-    const allHeroes = Object.values(players).flatMap(p => p.heroes);
-    const fastestHero = [...allHeroes].sort((a, b) => b.stats.spd - a.stats.spd)[0];
-    const firstPlayer = fastestHero.owner;
-    const secondPlayer = firstPlayer === 'player1' ? 'player2' : 'player1';
-    const turnOrder = [firstPlayer, secondPlayer];
-
     const gameState: GameState = {
       phase: 'planning', turn: 1, grid, players, pendingActions: { player1: [], player2: [] }, mapWidth, mapHeight,
     };
 
-    // Set initial state with camera pointing at first player
-    const activePlayer = gameState.players[firstPlayer];
-    const opponent = gameState.players[secondPlayer];
-    const playerMid = getPlayerHeroMidpoint(activePlayer);
-    const opponentMid = getPlayerHeroMidpoint(opponent);
-    const toOpp = opponentMid.clone().sub(playerMid);
-    const angle = Math.atan2(toOpp.x, toOpp.z) + Math.PI;
+    const order = buildInitiativeOrder(gameState);
+    const firstHeroId = order[0];
+    const firstHero = findHero(gameState, firstHeroId)!;
 
     set({
       gameState,
-      activePlayerId: firstPlayer,
-      turnOrder,
-      cameraConfig: { target: playerMid, angle, zoom: 70 },
+      initiativeOrder: order,
+      initiativeIndex: 0,
+      activeHeroId: firstHeroId,
+      round: 1,
+      actionMode: 'idle',
+      moveTiles: new Set(),
+      attackTiles: new Set(),
+      pendingTarget: null,
+      targetHeroId: null,
+      cameraConfig: {
+        target: new THREE.Vector3(firstHero.position.q, 0, firstHero.position.r),
+        angle: firstHero.owner === 'player1' ? Math.PI * 1.25 : Math.PI * 0.25,
+        zoom: 120,
+      },
     });
 
-    // Calculate visibility for first player
     get().updateVisibility();
   },
 
-  selectHero: (heroId) => {
-    const { gameState, activePlayerId } = get();
-    if (!gameState || !activePlayerId || !heroId) {
-      set({ selectedHero: null, currentPath: null });
-      return;
-    }
-    const hero = Object.values(gameState.players).flatMap(p => p.heroes).find(h => h.id === heroId);
-    if (hero && hero.owner === activePlayerId && hero.alive) {
-      set({ selectedHero: heroId, currentPath: null });
+  setActionMode: (mode) => {
+    const { gameState, activeHeroId } = get();
+    if (!gameState || !activeHeroId) return;
+    const hero = findHero(gameState, activeHeroId);
+    if (!hero) return;
+
+    if (mode === 'move' && !hero.hasMoved) {
+      set({ actionMode: 'move', moveTiles: computeMoveTiles(gameState, hero), attackTiles: new Set(), pendingTarget: null, targetHeroId: null });
+    } else if (mode === 'attack' && !hero.hasAttacked) {
+      set({ actionMode: 'attack', attackTiles: computeAttackTiles(gameState, hero), moveTiles: new Set(), pendingTarget: null, targetHeroId: null });
     } else {
-      set({ selectedHero: null, currentPath: null });
+      set({ actionMode: 'idle', moveTiles: new Set(), attackTiles: new Set(), pendingTarget: null, targetHeroId: null });
     }
   },
 
   setHoveredTile: (q, r) => {
-    const { gameState, selectedHero } = get();
-    if (!gameState || !selectedHero) {
-      set({ hoveredTile: { q, r } });
-      return;
-    }
-    const hero = Object.values(gameState.players).flatMap(p => p.heroes).find(h => h.id === selectedHero);
-    if (!hero || !hero.alive || hero.hasMoved) {
+    const { gameState, activeHeroId, actionMode } = get();
+    if (!gameState || !activeHeroId) { set({ hoveredTile: { q, r } }); return; }
+
+    const hero = findHero(gameState, activeHeroId);
+    if (!hero) { set({ hoveredTile: { q, r } }); return; }
+
+    if (actionMode === 'move' && !hero.hasMoved) {
+      const occupied = getOccupiedTiles(gameState, hero.id);
+      const fullPath = findPath(gameState.grid, hero.position.q, hero.position.r, q, r, Infinity, occupied);
+      const truncated = fullPath ? truncatePathToMovement(fullPath, gameState.grid, hero.stats.mov) : null;
+      set({ hoveredTile: { q, r }, currentPath: truncated });
+    } else if (actionMode === 'attack') {
+      // Check if hovered tile has an enemy
+      const enemy = getAllHeroes(gameState).find(h => h.alive && h.position.q === q && h.position.r === r && h.owner !== hero.owner);
+      set({ hoveredTile: { q, r }, currentPath: null, targetHeroId: enemy?.id || null });
+    } else {
       set({ hoveredTile: { q, r }, currentPath: null });
-      return;
     }
-    const occupied = getOccupiedTiles(gameState, hero.id);
-    const fullPath = findPath(gameState.grid, hero.position.q, hero.position.r, q, r, Infinity, occupied);
-    const truncated = fullPath ? truncatePathToMovement(fullPath, gameState.grid, hero.stats.mov) : null;
-    set({ hoveredTile: { q, r }, currentPath: truncated });
   },
 
   clearHover: () => set({ hoveredTile: null, currentPath: null }),
 
-  moveHero: (heroId, q, r) => {
-    const { gameState, activePlayerId } = get();
-    if (!gameState || !activePlayerId) return;
+  handleTileClick: (q, r) => {
+    const { gameState, activeHeroId, actionMode, pendingTarget, moveAnimation } = get();
+    if (!gameState || !activeHeroId || moveAnimation) return;
 
-    const gs = cloneGameState(gameState);
-    const player = gs.players[activePlayerId];
-    const hero = player?.heroes.find(h => h.id === heroId);
-    if (!hero || !hero.alive || hero.hasMoved) return;
+    const hero = findHero(gameState, activeHeroId);
+    if (!hero) return;
+    const tileKey = `${q},${r}`;
 
-    // Check destination isn't occupied
-    const occupied = getOccupiedTiles(gs, hero.id);
-    const fullPath = findPath(gs.grid, hero.position.q, hero.position.r, q, r, Infinity, occupied);
-    if (!fullPath || fullPath.length < 2) return;
+    if (actionMode === 'move') {
+      const moveTiles = get().moveTiles;
+      if (!moveTiles.has(tileKey)) return;
 
-    const truncated = truncatePathToMovement(fullPath, gs.grid, hero.stats.mov);
-    if (!truncated || truncated.length < 2) return;
+      // Double-click confirmation
+      if (pendingTarget && pendingTarget.q === q && pendingTarget.r === r) {
+        // Confirmed! Execute move with animation
+        const occupied = getOccupiedTiles(gameState, hero.id);
+        const fullPath = findPath(gameState.grid, hero.position.q, hero.position.r, q, r, Infinity, occupied);
+        if (!fullPath || fullPath.length < 2) return;
+        const truncated = truncatePathToMovement(fullPath, gameState.grid, hero.stats.mov);
+        if (!truncated || truncated.length < 2) return;
 
-    // Make sure final tile isn't occupied
-    const dest = truncated[truncated.length - 1];
-    if (occupied.has(`${dest.q},${dest.r}`)) return;
-    hero.position = { q: dest.q, r: dest.r };
-    hero.hasMoved = true;
+        set({
+          moveAnimation: { heroId: hero.id, path: truncated, currentIndex: 0, progress: 0 },
+          pendingTarget: null,
+          actionMode: 'idle',
+          moveTiles: new Set(),
+        });
+      } else {
+        // First click — mark pending
+        set({ pendingTarget: { q, r } });
+      }
+    } else if (actionMode === 'attack') {
+      if (!get().attackTiles.has(tileKey)) return;
+      const enemy = getAllHeroes(gameState).find(h => h.alive && h.position.q === q && h.position.r === r && h.owner !== hero.owner);
+      if (!enemy) return;
 
-    set({ gameState: gs, selectedHero: null, currentPath: null });
-    get().updateVisibility();
-  },
+      // Double-click confirmation
+      if (pendingTarget && pendingTarget.q === q && pendingTarget.r === r) {
+        // Confirmed! Execute attack
+        const gs = cloneGameState(gameState);
+        const attacker = findHero(gs, activeHeroId)!;
+        const target = findHero(gs, enemy.id)!;
 
-  attackHero: (attackerId, targetId) => {
-    const { gameState, activePlayerId } = get();
-    if (!gameState || !activePlayerId) return;
+        const damage = Math.max(1, attacker.stats.atk - target.stats.def);
+        target.stats.hp -= damage;
+        if (target.stats.hp <= 0) { target.stats.hp = 0; target.alive = false; }
+        attacker.hasAttacked = true;
 
-    const gs = cloneGameState(gameState);
-    const attacker = gs.players[activePlayerId]?.heroes.find(h => h.id === attackerId);
-    const targetPlayer = Object.values(gs.players).find(p => p.heroes.some(h => h.id === targetId));
-    const target = targetPlayer?.heroes.find(h => h.id === targetId);
+        set({
+          gameState: gs,
+          pendingTarget: null,
+          actionMode: 'idle',
+          attackTiles: new Set(),
+          targetHeroId: target.id, // keep target panel showing so they see the HP drop
+        });
 
-    if (!attacker || !target || attacker.owner === target.owner || attacker.hasAttacked) return;
-
-    const dist = octileDistance(attacker.position.q, attacker.position.r, target.position.q, target.position.r);
-    if (dist > attacker.stats.rng) return;
-
-    const damage = Math.max(1, attacker.stats.atk - target.stats.def);
-    target.stats.hp -= damage;
-    if (target.stats.hp <= 0) {
-      target.stats.hp = 0;
-      target.alive = false;
+        // Auto-advance if hero has used both actions
+        const updatedHero = findHero(gs, activeHeroId)!;
+        if (updatedHero.hasMoved && updatedHero.hasAttacked) {
+          setTimeout(() => get().advanceTurn(), 600);
+        }
+      } else {
+        // First click — set pending + show target
+        set({ pendingTarget: { q, r }, targetHeroId: enemy.id });
+      }
     }
-    attacker.hasAttacked = true;
-
-    set({ gameState: gs, selectedHero: null });
   },
 
-  endTurn: () => {
-    const { gameState, activePlayerId, turnOrder } = get();
-    if (!gameState || !activePlayerId) return;
+  advanceTurn: () => {
+    const { gameState, initiativeOrder, initiativeIndex } = get();
+    if (!gameState) return;
 
-    const gs = cloneGameState(gameState);
+    let gs = cloneGameState(gameState);
+    let nextIndex = initiativeIndex + 1;
+    let round = get().round;
 
-    const currentIndex = turnOrder.indexOf(activePlayerId);
-    const nextIndex = (currentIndex + 1) % turnOrder.length;
-    const nextPlayerId = turnOrder[nextIndex];
-
-    // Full round completed → increment turn, reset all hero actions
-    if (nextIndex === 0) {
-      gs.turn++;
+    // If we've gone through all heroes, start a new round
+    if (nextIndex >= initiativeOrder.length) {
+      nextIndex = 0;
+      round++;
+      // Reset all hero actions
       for (const player of Object.values(gs.players)) {
         for (const hero of player.heroes) {
           hero.hasMoved = false;
           hero.hasAttacked = false;
         }
       }
+      gs.turn = round;
     }
 
-    // Camera snap: behind next player's units, facing opponent
-    const activePlayer = gs.players[nextPlayerId];
-    const opponentId = turnOrder.find(id => id !== nextPlayerId)!;
-    const opponent = gs.players[opponentId];
-    const playerMid = getPlayerHeroMidpoint(activePlayer);
-    const opponentMid = getPlayerHeroMidpoint(opponent);
-    const toOpp = opponentMid.clone().sub(playerMid);
-    const angle = Math.atan2(toOpp.x, toOpp.z) + Math.PI;
+    // Rebuild initiative in case someone died
+    const order = buildInitiativeOrder(gs);
+    if (order.length === 0) return; // game over
+
+    const safeIndex = nextIndex >= order.length ? 0 : nextIndex;
+    const nextHeroId = order[safeIndex];
+    const nextHero = findHero(gs, nextHeroId)!;
 
     set({
       gameState: gs,
-      activePlayerId: nextPlayerId,
-      selectedHero: null,
+      initiativeOrder: order,
+      initiativeIndex: safeIndex,
+      activeHeroId: nextHeroId,
+      round,
+      actionMode: 'idle',
+      moveTiles: new Set(),
+      attackTiles: new Set(),
+      pendingTarget: null,
+      targetHeroId: null,
       currentPath: null,
-      cameraConfig: { target: playerMid, angle, zoom: 70 },
+      cameraConfig: {
+        target: new THREE.Vector3(nextHero.position.q, 0, nextHero.position.r),
+        angle: nextHero.owner === 'player1' ? Math.PI * 1.25 : Math.PI * 0.25,
+        zoom: 120,
+      },
     });
 
-    // Recalculate fog of war for the new active player
     get().updateVisibility();
   },
 
   updateVisibility: () => {
-    const { gameState, activePlayerId } = get();
-    if (!gameState || !activePlayerId) return;
+    const { gameState, activeHeroId } = get();
+    if (!gameState || !activeHeroId) return;
+
+    const hero = findHero(gameState, activeHeroId);
+    if (!hero) return;
 
     const gs = cloneGameState(gameState);
-    const player = gs.players[activePlayerId];
+    const player = gs.players[hero.owner];
     if (!player) return;
 
-    // Reset all tiles from visible → explored
     for (const row of gs.grid) {
       for (const tile of row) {
         if (tile.visible === 'visible') tile.visible = 'explored';
       }
     }
 
-    // Reveal tiles around each living hero
-    for (const hero of player.heroes) {
-      if (!hero.alive) continue;
-      const visibleTiles = calculateVisibility(gs.grid, hero.position.q, hero.position.r, hero.stats.vis);
-      for (const key of visibleTiles) {
+    // Reveal for ALL of this player's heroes (not just active one)
+    for (const h of player.heroes) {
+      if (!h.alive) continue;
+      const vis = calculateVisibility(gs.grid, h.position.q, h.position.r, h.stats.vis);
+      for (const key of vis) {
         const [tq, tr] = key.split(',').map(Number);
         if (tr >= 0 && tr < gs.grid.length && tq >= 0 && tq < gs.grid[0].length) {
           gs.grid[tr][tq].visible = 'visible';
@@ -299,37 +459,62 @@ export const useGameStore = create<GameStore>((set, get) => ({
   focusHero: (heroId) => {
     const { gameState } = get();
     if (!gameState) return;
-    const hero = Object.values(gameState.players).flatMap(p => p.heroes).find(h => h.id === heroId);
+    const hero = findHero(gameState, heroId);
     if (!hero || !hero.alive) return;
-
     set({
       cameraConfig: {
         target: new THREE.Vector3(hero.position.q, 0, hero.position.r),
         angle: get().cameraConfig?.angle ?? Math.PI / 4,
-        zoom: 80, // closer zoom on focus
+        zoom: 120,
       },
     });
   },
-}));
 
-function truncatePathToMovement(
-  path: { q: number; r: number }[],
-  grid: Tile[][],
-  maxMov: number
-): { q: number; r: number }[] {
-  if (path.length <= 1) return path;
-  const result = [path[0]];
-  let spent = 0;
-  for (let i = 1; i < path.length; i++) {
-    const prev = path[i - 1];
-    const cur = path[i];
-    const tile = grid[cur.r][cur.q];
-    const base = TERRAIN_CONFIG[tile.terrain].moveCost;
-    const isDiag = prev.q !== cur.q && prev.r !== cur.r;
-    const cost = base * (isDiag ? 1.414 : 1);
-    if (spent + cost > maxMov) break;
-    spent += cost;
-    result.push(cur);
-  }
-  return result;
-}
+  tickMoveAnimation: (delta) => {
+    const { moveAnimation, gameState } = get();
+    if (!moveAnimation || !gameState) return false;
+
+    const MOVE_SPEED = 4; // tiles per second
+    const newProgress = moveAnimation.progress + delta * MOVE_SPEED;
+
+    if (newProgress >= 1) {
+      // Advance to next segment
+      const nextIndex = moveAnimation.currentIndex + 1;
+      if (nextIndex >= moveAnimation.path.length - 1) {
+        // Animation complete — commit the move
+        const gs = cloneGameState(gameState);
+        const hero = findHero(gs, moveAnimation.heroId);
+        if (hero) {
+          const dest = moveAnimation.path[moveAnimation.path.length - 1];
+          hero.position = { q: dest.q, r: dest.r };
+          hero.hasMoved = true;
+
+          set({ gameState: gs, moveAnimation: null });
+          get().updateVisibility();
+
+          // Auto-advance if hero fully spent
+          if (hero.hasAttacked) {
+            setTimeout(() => get().advanceTurn(), 300);
+          }
+        } else {
+          set({ moveAnimation: null });
+        }
+        return false;
+      }
+
+      set({
+        moveAnimation: {
+          ...moveAnimation,
+          currentIndex: nextIndex,
+          progress: newProgress - 1,
+        },
+      });
+      return true;
+    }
+
+    set({
+      moveAnimation: { ...moveAnimation, progress: newProgress },
+    });
+    return true;
+  },
+}));
