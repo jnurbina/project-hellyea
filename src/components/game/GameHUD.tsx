@@ -1,82 +1,116 @@
 'use client';
 
 import { useEffect, useMemo } from 'react';
-import { useGameStore, ActionMode } from '@/lib/game-store';
+import { useGameStore, ActionMode, QueuedAction } from '@/lib/game-store';
 import { Hero } from '@/lib/types';
 
 export default function GameHUD() {
   const gameState = useGameStore(s => s.gameState);
-  const activeHeroId = useGameStore(s => s.activeHeroId);
-  const actionMode = useGameStore(s => s.actionMode);
+  const phase = useGameStore(s => s.phase);
   const round = useGameStore(s => s.round);
-  const initiativeOrder = useGameStore(s => s.initiativeOrder);
-  const initiativeIndex = useGameStore(s => s.initiativeIndex);
+  const planningPlayerId = useGameStore(s => s.planningPlayerId);
+  const selectedHeroId = useGameStore(s => s.selectedHeroId);
+  const actionMode = useGameStore(s => s.actionMode);
+  const queuedActions = useGameStore(s => s.queuedActions);
   const targetHeroId = useGameStore(s => s.targetHeroId);
   const pendingTarget = useGameStore(s => s.pendingTarget);
-  const moveAnimation = useGameStore(s => s.moveAnimation);
+  const showEndTurnConfirm = useGameStore(s => s.showEndTurnConfirm);
+  const resolutionOrder = useGameStore(s => s.resolutionOrder);
+  const resolutionIndex = useGameStore(s => s.resolutionIndex);
+
+  const selectHero = useGameStore(s => s.selectHero);
   const setActionMode = useGameStore(s => s.setActionMode);
-  const advanceTurn = useGameStore(s => s.advanceTurn);
+  const requestEndTurn = useGameStore(s => s.requestEndTurn);
+  const confirmEndTurn = useGameStore(s => s.confirmEndTurn);
+  const cancelEndTurn = useGameStore(s => s.cancelEndTurn);
   const focusHero = useGameStore(s => s.focusHero);
 
-  // Keyboard shortcuts
+  // Keyboard: SPACE = end turn, ESC = cancel/deselect
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
-      if (e.code === 'KeyM') setActionMode('move');
-      if (e.code === 'KeyA') setActionMode('attack');
-      if (e.code === 'Space') { e.preventDefault(); advanceTurn(); }
-      if (e.code === 'Escape') setActionMode('idle');
+      if (phase !== 'planning') return;
+      if (e.code === 'Space') {
+        e.preventDefault();
+        if (showEndTurnConfirm) confirmEndTurn();
+        else requestEndTurn();
+      }
+      if (e.code === 'Escape') {
+        if (showEndTurnConfirm) cancelEndTurn();
+        else if (actionMode !== 'idle') setActionMode('idle');
+        else selectHero(null);
+      }
     };
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
-  }, [setActionMode, advanceTurn]);
+  }, [phase, showEndTurnConfirm, actionMode, confirmEndTurn, requestEndTurn, cancelEndTurn, setActionMode, selectHero]);
 
   const allHeroes = useMemo(() =>
     gameState ? Object.values(gameState.players).flatMap(p => [...p.heroes]) : [],
     [gameState]
   );
 
-  if (!gameState || !activeHeroId) return null;
+  if (!gameState) return null;
 
-  const activeHero = allHeroes.find(h => h.id === activeHeroId);
+  const activePlayer = gameState.players[planningPlayerId];
+  const selectedHero = allHeroes.find(h => h.id === selectedHeroId);
   const targetHero = targetHeroId ? allHeroes.find(h => h.id === targetHeroId) : null;
-  if (!activeHero) return null;
-
-  const activePlayer = gameState.players[activeHero.owner];
 
   return (
     <div className="absolute inset-0 pointer-events-none font-mono select-none">
-      {/* ── Top bar: Round + Initiative tracker ── */}
+      {/* ── Top bar ── */}
       <div className="absolute top-0 left-0 right-0 p-3 flex items-start gap-3">
-        {/* Round info */}
         <div className="pointer-events-auto bg-black/80 border border-cyan-900/50 rounded px-3 py-2 text-xs shrink-0">
           <div className="text-cyan-400 font-bold">ROUND {round}</div>
-          <div className="text-gray-500 text-[10px]">{activePlayer.name}</div>
+          <div className="text-gray-500 text-[10px]">
+            {phase === 'planning' ? `${activePlayer.name} — PLANNING` : 'RESOLUTION'}
+          </div>
         </div>
 
-        {/* Initiative bar */}
-        <div className="pointer-events-auto bg-black/80 border border-gray-700 rounded px-3 py-2 flex gap-1.5 items-center overflow-x-auto">
-          {initiativeOrder.map((heroId, idx) => {
-            const hero = allHeroes.find(h => h.id === heroId);
-            if (!hero) return null;
-            const isCurrent = idx === initiativeIndex;
-            const isPast = idx < initiativeIndex;
-            const color = hero.owner === 'player1' ? 'cyan' : 'red';
-            return (
-              <div
-                key={heroId}
-                className={`px-2 py-1 rounded text-[10px] font-bold uppercase cursor-pointer transition-all whitespace-nowrap ${
-                  isCurrent ? `bg-${color}-900/50 border border-${color}-400 text-${color}-300 shadow-[0_0_8px_rgba(0,255,255,0.2)]`
-                  : isPast ? 'bg-gray-800/50 text-gray-600 line-through'
-                  : 'bg-gray-800/30 text-gray-500'
-                }`}
-                style={isCurrent ? { borderColor: hero.owner === 'player1' ? '#00ccff' : '#ff4444', color: hero.owner === 'player1' ? '#88ddff' : '#ff8888' } : {}}
-                onClick={() => focusHero(heroId)}
-              >
-                {hero.name} <span className="text-gray-600">({hero.stats.spd})</span>
-              </div>
-            );
-          })}
-        </div>
+        {/* Hero roster for current player */}
+        {phase === 'planning' && (
+          <div className="pointer-events-auto bg-black/80 border border-gray-700 rounded px-3 py-2 flex gap-1.5">
+            {activePlayer.heroes.map(hero => {
+              const q = queuedActions[hero.id];
+              const isSelected = selectedHeroId === hero.id;
+              const hasQueue = !!(q?.moveDest || q?.attackTargetId);
+              return (
+                <div
+                  key={hero.id}
+                  className={`px-2 py-1 rounded text-[10px] font-bold uppercase cursor-pointer transition-all whitespace-nowrap border ${
+                    isSelected ? 'border-cyan-400 bg-cyan-900/40 text-cyan-300'
+                    : hasQueue ? 'border-green-700 bg-green-900/20 text-green-400'
+                    : 'border-gray-700 bg-gray-800/30 text-gray-500 hover:border-gray-500'
+                  } ${!hero.alive ? 'opacity-30 cursor-not-allowed' : ''}`}
+                  onClick={() => { if (hero.alive) selectHero(hero.id); }}
+                  onDoubleClick={() => focusHero(hero.id)}
+                >
+                  {hero.name}
+                  {hasQueue && <span className="ml-1 text-green-500">✓</span>}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Resolution progress */}
+        {phase === 'resolution' && (
+          <div className="bg-black/80 border border-yellow-900/50 rounded px-3 py-2 flex gap-1.5">
+            {resolutionOrder.map((heroId, idx) => {
+              const hero = allHeroes.find(h => h.id === heroId);
+              if (!hero) return null;
+              const isCurrent = idx === resolutionIndex;
+              const isDone = idx < resolutionIndex;
+              return (
+                <div key={heroId} className={`px-2 py-1 rounded text-[10px] font-bold uppercase whitespace-nowrap ${
+                  isCurrent ? 'bg-yellow-900/50 border border-yellow-400 text-yellow-300 animate-pulse'
+                  : isDone ? 'bg-gray-800/50 text-gray-600 line-through' : 'bg-gray-800/30 text-gray-500'
+                }`}>
+                  {hero.name} ({hero.stats.spd})
+                </div>
+              );
+            })}
+          </div>
+        )}
 
         {/* Resources */}
         <div className="pointer-events-auto bg-black/80 border border-cyan-900/50 rounded px-3 py-2 text-xs flex gap-3 ml-auto shrink-0">
@@ -86,20 +120,48 @@ export default function GameHUD() {
         </div>
       </div>
 
-      {/* ── Bottom Left: Active Hero panel ── */}
-      <div className="absolute bottom-4 left-4 pointer-events-auto">
-        <ActiveHeroPanel hero={activeHero} actionMode={actionMode} setActionMode={setActionMode} advanceTurn={advanceTurn} animating={!!moveAnimation} />
-      </div>
-
-      {/* ── Bottom Right: Target panel (during attack) ── */}
-      {targetHero && actionMode === 'attack' && (
-        <div className="absolute bottom-4 right-4 pointer-events-auto">
-          <TargetPanel hero={targetHero} attacker={activeHero} isPending={!!pendingTarget} />
+      {/* ── Bottom Left: Active hero panel ── */}
+      {phase === 'planning' && selectedHero && selectedHero.owner === planningPlayerId && (
+        <div className="absolute bottom-4 left-4 pointer-events-auto">
+          <HeroActionPanel
+            hero={selectedHero}
+            queued={queuedActions[selectedHero.id]}
+            actionMode={actionMode}
+            setActionMode={setActionMode}
+          />
         </div>
       )}
 
-      {/* Action mode indicator */}
-      {actionMode !== 'idle' && (
+      {/* ── Bottom Right: Target panel ── */}
+      {targetHero && selectedHero && (actionMode === 'attack' || phase === 'resolution') && (
+        <div className="absolute bottom-4 right-4 pointer-events-auto">
+          <TargetPanel hero={targetHero} attacker={selectedHero} isPending={!!pendingTarget} />
+        </div>
+      )}
+
+      {/* ── Bottom Center: End Turn ── */}
+      {phase === 'planning' && (
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 pointer-events-auto">
+          <button
+            onClick={requestEndTurn}
+            className="bg-cyan-900/40 hover:bg-cyan-800/50 border border-cyan-500/40 rounded px-6 py-2.5 text-sm text-cyan-400 font-bold uppercase tracking-wider transition-colors"
+          >
+            End Planning <span className="text-gray-500 text-[10px]">[SPACE]</span>
+          </button>
+        </div>
+      )}
+
+      {/* ── Resolution overlay ── */}
+      {phase === 'resolution' && (
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2">
+          <div className="bg-yellow-900/30 border border-yellow-500/30 rounded px-6 py-2 text-yellow-400 text-sm font-bold uppercase tracking-wider animate-pulse">
+            ⚔ Resolving Actions...
+          </div>
+        </div>
+      )}
+
+      {/* ── Action mode indicator ── */}
+      {actionMode !== 'idle' && phase === 'planning' && (
         <div className="absolute top-14 left-1/2 -translate-x-1/2">
           <div className={`px-4 py-1.5 rounded text-xs font-bold uppercase tracking-wider ${
             actionMode === 'move' ? 'bg-green-900/60 border border-green-500/50 text-green-400' : 'bg-red-900/60 border border-red-500/50 text-red-400'
@@ -109,18 +171,40 @@ export default function GameHUD() {
           </div>
         </div>
       )}
+
+      {/* ── End Turn Confirmation Modal ── */}
+      {showEndTurnConfirm && (
+        <div className="absolute inset-0 flex items-center justify-center bg-black/50 pointer-events-auto">
+          <div className="bg-black/90 border border-cyan-500/50 rounded-lg px-8 py-6 text-center shadow-[0_0_30px_rgba(0,255,255,0.15)]">
+            <div className="text-cyan-400 text-lg font-bold mb-2">END PLANNING?</div>
+            <div className="text-gray-400 text-xs mb-1">
+              {planningPlayerId === 'player1' ? 'Player 2 will plan next.' : 'All actions will resolve by speed order.'}
+            </div>
+            <div className="text-gray-500 text-[10px] mb-4">
+              {Object.keys(queuedActions).length} action(s) queued
+            </div>
+            <div className="flex gap-4 justify-center">
+              <button onClick={confirmEndTurn} className="bg-cyan-900/50 hover:bg-cyan-700/50 border border-cyan-500 rounded px-6 py-2 text-cyan-400 text-sm uppercase tracking-wider">Confirm [SPACE]</button>
+              <button onClick={cancelEndTurn} className="bg-gray-800/50 hover:bg-gray-700/50 border border-gray-600 rounded px-6 py-2 text-gray-400 text-sm uppercase tracking-wider">Cancel [ESC]</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-function ActiveHeroPanel({ hero, actionMode, setActionMode, advanceTurn, animating }: {
-  hero: Hero; actionMode: ActionMode; setActionMode: (m: ActionMode) => void; advanceTurn: () => void; animating: boolean;
+// === Hero Action Panel (Bottom Left) ===
+
+function HeroActionPanel({ hero, queued, actionMode, setActionMode }: {
+  hero: Hero; queued?: QueuedAction; actionMode: ActionMode; setActionMode: (m: ActionMode) => void;
 }) {
   const color = hero.owner === 'player1' ? '#00ccff' : '#ff4444';
+  const hasQueuedMove = !!queued?.moveDest;
+  const hasQueuedAttack = !!queued?.attackTargetId;
 
   return (
     <div className="bg-black/85 border rounded-lg px-4 py-3 min-w-[260px] max-w-[280px]" style={{ borderColor: color + '66' }}>
-      {/* Header */}
       <div className="flex justify-between items-center mb-2">
         <div>
           <div className="font-bold uppercase" style={{ color }}>{hero.name}</div>
@@ -129,7 +213,7 @@ function ActiveHeroPanel({ hero, actionMode, setActionMode, advanceTurn, animati
         <div className="text-[10px] text-gray-500 uppercase">{hero.archetype}</div>
       </div>
 
-      {/* HP bar */}
+      {/* HP */}
       <div className="mb-3">
         <div className="flex justify-between text-[10px] mb-0.5">
           <span className="text-gray-500">HP</span>
@@ -143,7 +227,6 @@ function ActiveHeroPanel({ hero, actionMode, setActionMode, advanceTurn, animati
         </div>
       </div>
 
-      {/* Stats */}
       <div className="flex gap-3 text-[10px] mb-3">
         <Stat label="ATK" value={hero.stats.atk} />
         <Stat label="DEF" value={hero.stats.def} />
@@ -152,43 +235,36 @@ function ActiveHeroPanel({ hero, actionMode, setActionMode, advanceTurn, animati
         <Stat label="SPD" value={hero.stats.spd} />
       </div>
 
-      {/* Action buttons */}
+      {/* Action buttons — click only, no keybinds */}
       <div className="flex gap-2">
         <button
-          disabled={hero.hasMoved || animating}
+          disabled={hasQueuedMove}
           onClick={() => setActionMode(actionMode === 'move' ? 'idle' : 'move')}
           className={`flex-1 py-1.5 rounded text-xs font-bold uppercase tracking-wider transition-all ${
-            actionMode === 'move' ? 'bg-green-700 text-white border border-green-400' :
-            hero.hasMoved ? 'bg-gray-800 text-gray-600 cursor-not-allowed' :
-            'bg-green-900/40 text-green-400 border border-green-700 hover:bg-green-800/50'
+            actionMode === 'move' ? 'bg-green-700 text-white border border-green-400'
+            : hasQueuedMove ? 'bg-green-900/30 text-green-600 border border-green-800 cursor-not-allowed'
+            : 'bg-green-900/40 text-green-400 border border-green-700 hover:bg-green-800/50'
           }`}
         >
-          {hero.hasMoved ? '✓ Moved' : '⬡ Move'} <span className="text-gray-500 text-[9px]">[M]</span>
+          {hasQueuedMove ? '✓ Move Queued' : '⬡ Move'}
         </button>
         <button
-          disabled={hero.hasAttacked || animating}
+          disabled={hasQueuedAttack}
           onClick={() => setActionMode(actionMode === 'attack' ? 'idle' : 'attack')}
           className={`flex-1 py-1.5 rounded text-xs font-bold uppercase tracking-wider transition-all ${
-            actionMode === 'attack' ? 'bg-red-700 text-white border border-red-400' :
-            hero.hasAttacked ? 'bg-gray-800 text-gray-600 cursor-not-allowed' :
-            'bg-red-900/40 text-red-400 border border-red-700 hover:bg-red-800/50'
+            actionMode === 'attack' ? 'bg-red-700 text-white border border-red-400'
+            : hasQueuedAttack ? 'bg-red-900/30 text-red-600 border border-red-800 cursor-not-allowed'
+            : 'bg-red-900/40 text-red-400 border border-red-700 hover:bg-red-800/50'
           }`}
         >
-          {hero.hasAttacked ? '✓ Attacked' : '⚔ Attack'} <span className="text-gray-500 text-[9px]">[A]</span>
+          {hasQueuedAttack ? '✓ Attack Queued' : '⚔ Attack'}
         </button>
       </div>
-
-      {/* End turn */}
-      <button
-        onClick={advanceTurn}
-        disabled={animating}
-        className="w-full mt-2 py-1.5 rounded text-[10px] font-bold uppercase tracking-wider bg-gray-800/50 text-gray-400 border border-gray-700 hover:bg-gray-700/50 transition-all"
-      >
-        End Hero Turn <span className="text-gray-600">[SPACE]</span>
-      </button>
     </div>
   );
 }
+
+// === Target Panel (Bottom Right) ===
 
 function TargetPanel({ hero, attacker, isPending }: { hero: Hero; attacker: Hero; isPending: boolean }) {
   const damage = Math.max(1, attacker.stats.atk - hero.stats.def);
@@ -198,19 +274,13 @@ function TargetPanel({ hero, attacker, isPending }: { hero: Hero; attacker: Hero
     <div className="bg-black/85 border border-red-900/50 rounded-lg px-4 py-3 min-w-[220px]">
       <div className="text-red-400 font-bold uppercase mb-2">{hero.name} <span className="text-gray-500 text-[10px] normal-case">({hero.owner})</span></div>
 
-      {/* HP bar with damage preview */}
       <div className="mb-2">
         <div className="flex justify-between text-[10px] mb-0.5">
           <span className="text-gray-500">HP</span>
           <span className="text-white">{hero.stats.hp} → <span className={hpAfter === 0 ? 'text-red-500 font-bold' : 'text-yellow-400'}>{hpAfter}</span></span>
         </div>
         <div className="w-full h-1.5 bg-gray-800 rounded-full overflow-hidden relative">
-          {/* Current HP */}
-          <div className="h-full rounded-full absolute top-0 left-0 transition-all" style={{
-            width: `${(hero.stats.hp / hero.stats.maxHp) * 100}%`,
-            backgroundColor: '#cc3333',
-          }} />
-          {/* HP after damage */}
+          <div className="h-full rounded-full absolute top-0 left-0" style={{ width: `${(hero.stats.hp / hero.stats.maxHp) * 100}%`, backgroundColor: '#cc3333' }} />
           <div className="h-full rounded-full absolute top-0 left-0 transition-all" style={{
             width: `${(hpAfter / hero.stats.maxHp) * 100}%`,
             backgroundColor: hpAfter > hero.stats.maxHp * 0.5 ? '#00ccaa' : hpAfter > hero.stats.maxHp * 0.25 ? '#ccaa00' : '#cc3333',
@@ -227,9 +297,7 @@ function TargetPanel({ hero, attacker, isPending }: { hero: Hero; attacker: Hero
         ⚔ {damage} damage {hpAfter === 0 && <span className="text-red-500">— LETHAL</span>}
       </div>
 
-      {isPending && (
-        <div className="mt-2 text-[10px] text-white animate-pulse">Double-click to confirm attack</div>
-      )}
+      {isPending && <div className="mt-2 text-[10px] text-white animate-pulse">Double-click to confirm attack</div>}
     </div>
   );
 }

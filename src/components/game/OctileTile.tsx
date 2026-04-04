@@ -32,6 +32,7 @@ interface OctileTileProps {
   isMoveRange: boolean;
   isAttackRange: boolean;
   isPending: boolean;
+  hasQueuedMove: boolean;
   onClick: () => void;
   onPointerEnter: () => void;
   onPointerLeave: () => void;
@@ -39,7 +40,7 @@ interface OctileTileProps {
 
 export default function OctileTileMesh({
   tile, isHighlighted, isPath, isSelected, hasHero, heroColor, isEnemy,
-  isMoveRange, isAttackRange, isPending,
+  isMoveRange, isAttackRange, isPending, hasQueuedMove,
   onClick, onPointerEnter, onPointerLeave,
 }: OctileTileProps) {
 
@@ -47,6 +48,7 @@ export default function OctileTileMesh({
     if (tile.visible === 'unexplored') return '#151618';
     const base = TERRAIN_CONFIG[tile.terrain].color;
     if (tile.visible === 'explored') return darkenColor(base, 0.5);
+    if (hasQueuedMove) return '#1a3322';
     if (isPending) return isAttackRange ? '#662222' : '#225533';
     if (isSelected) return '#004855';
     if (isPath) return '#1a4030';
@@ -58,6 +60,7 @@ export default function OctileTileMesh({
 
   const edgeColor = useMemo(() => {
     if (tile.visible === 'unexplored') return '#0e0f12';
+    if (hasQueuedMove) return '#44aa66';
     if (isPending) return isAttackRange ? '#ff6666' : '#66ff88';
     if (isSelected) return '#00ddff';
     if (isPath) return '#44cc66';
