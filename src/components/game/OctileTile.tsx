@@ -3,8 +3,9 @@
 import { useMemo } from 'react';
 import * as THREE from 'three';
 import { ThreeEvent } from '@react-three/fiber';
-import { Line, Text } from '@react-three/drei';
+import { Line, Text, Html } from '@react-three/drei';
 import { Tile, TERRAIN_CONFIG } from '@/lib/types';
+import { useGameStore } from '@/lib/game-store';
 
 const TILE_SIZE = 0.46;
 const TILE_DEPTH = 0.08;
@@ -13,6 +14,7 @@ const WALL_COLOR = '#2a2050'; // blue-purple cliff walls
 const octGeo = createOctagonGeometry(TILE_SIZE, TILE_DEPTH);
 const octEdgePoints = getOctagonEdgePoints(TILE_SIZE);
 
+// Resource geometries (cached)
 const resourceGeometries = {
   wood: new THREE.BoxGeometry(0.18, 0.06, 0.06),
   stone: new THREE.DodecahedronGeometry(0.07, 0),
@@ -43,33 +45,42 @@ export default function OctileTileMesh({
   isMoveRange, isAttackRange, isPending, hasQueuedMove,
   onClick, onPointerEnter, onPointerLeave,
 }: OctileTileProps) {
+  const gameState = useGameStore(s => s.gameState);
+  const allHeroes = useMemo(() => 
+    gameState ? Object.values(gameState.players).flatMap(p => [...p.heroes]) : [],
+    [gameState]
+  );
+  const heroOnTileData = useMemo(() => {
+    const hero = allHeroes.find(h => h.position.q === tile.q && h.position.r === tile.r);
+    return hero;
+  }, [allHeroes, tile.q, tile.r]);
 
   const color = useMemo(() => {
     if (tile.visible === 'unexplored') return '#151618';
     const base = TERRAIN_CONFIG[tile.terrain].color;
     if (tile.visible === 'explored') return darkenColor(base, 0.5);
-    if (hasQueuedMove) return '#1a3322';
     if (isPending) return isAttackRange ? '#662222' : '#225533';
     if (isSelected) return '#004855';
     if (isPath) return '#1a4030';
     if (isHighlighted && isMoveRange) return '#1a3828';
     if (isHighlighted && isAttackRange) return '#3a1818';
     if (isHighlighted) return '#2a3540';
+    if (hasQueuedMove) return '#1a3322';
     return base;
-  }, [tile.visible, tile.terrain, isHighlighted, isPath, isSelected, isMoveRange, isAttackRange, isPending]);
+  }, [tile.visible, tile.terrain, isHighlighted, isPath, isSelected, isMoveRange, isAttackRange, isPending, hasQueuedMove]);
 
   const edgeColor = useMemo(() => {
     if (tile.visible === 'unexplored') return '#0e0f12';
-    if (hasQueuedMove) return '#44aa66';
     if (isPending) return isAttackRange ? '#ff6666' : '#66ff88';
     if (isSelected) return '#00ddff';
     if (isPath) return '#44cc66';
-    if (isMoveRange) return '#33aa55';    // green edge for move range
-    if (isAttackRange) return '#cc4444';  // red edge for attack range
+    if (isMoveRange) return '#33aa55';
+    if (isAttackRange) return '#cc4444';
     if (isHighlighted) return isEnemy ? '#aa4444' : '#4499bb';
+    if (hasQueuedMove) return '#44aa66';
     if (tile.visible === 'explored') return '#22242a';
     return '#4a5868';
-  }, [tile.visible, isHighlighted, isPath, isSelected, isEnemy, isMoveRange, isAttackRange, isPending]);
+  }, [tile.visible, isHighlighted, isPath, isSelected, isEnemy, isMoveRange, isAttackRange, isPending, hasQueuedMove]);
 
   const edgeOpacity = useMemo(() => {
     if (tile.visible === 'unexplored') return 0.15;
@@ -101,7 +112,7 @@ export default function OctileTileMesh({
       <Line
         points={octEdgePoints}
         color={edgeColor}
-        lineWidth={isMoveRange || isAttackRange || isPending ? 2 : 1.2}
+        lineWidth={isMoveRange || isAttackRange || isPending || hasQueuedMove ? 2 : 1.2}
         transparent
         opacity={edgeOpacity}
       />
@@ -119,8 +130,9 @@ export default function OctileTileMesh({
         <ResourceIndicator type={tile.resourceType} amount={tile.resourceAmount} />
       )}
 
-      {/* Hero */}
-      {hasHero && <HeroIndicator color={heroColor || '#ffffff'} />}
+      {/* Hero. Only render if alive, otherwise show skull. */}
+      {heroOnTileData && heroOnTileData.alive && <HeroIndicator color={heroColor || '#ffffff'} />}
+      {heroOnTileData && !heroOnTileData.alive && tile.visible !== 'unexplored' && <DeadHeroIndicator />}
     </group>
   );
 }
@@ -151,6 +163,18 @@ function HeroIndicator({ color }: { color: string }) {
         <ringGeometry args={[0.15, 0.22, 16]} />
         <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.7} transparent opacity={0.5} />
       </mesh>
+    </group>
+  );
+}
+
+function DeadHeroIndicator() {
+  return (
+    <group position={[0, TILE_DEPTH + 0.05, 0.1]} rotation={[-Math.PI / 2, 0, 0]}>
+      <Html center style={{ pointerEvents: 'none' }}>
+        <div className="text-gray-500 text-2xl animate-pulse select-none" style={{ textShadow: '0 0 8px black' }}>
+          ☠
+        </div>
+      </Html>
     </group>
   );
 }

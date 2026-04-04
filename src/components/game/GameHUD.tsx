@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo } from 'react';
-import { useGameStore, QueuedAction } from '@/lib/game-store';
+import { useGameStore, QueuedAction, ActionMode } from '@/lib/game-store';
 import { Hero } from '@/lib/types';
 
 export default function GameHUD() {
@@ -17,6 +17,7 @@ export default function GameHUD() {
   const showEndTurnConfirm = useGameStore(s => s.showEndTurnConfirm);
   const resolutionOrder = useGameStore(s => s.resolutionOrder);
   const resolutionIndex = useGameStore(s => s.resolutionIndex);
+  const moveAnimation = useGameStore(s => s.moveAnimation); // For disabling buttons during animation
 
   const selectHero = useGameStore(s => s.selectHero);
   const setActionMode = useGameStore(s => s.setActionMode);
@@ -66,51 +67,33 @@ export default function GameHUD() {
         </div>
 
         {/* Hero roster */}
-        {phase === 'planning' && (
-          <div className="pointer-events-auto bg-black/80 border border-gray-700 rounded px-3 py-2 flex gap-1.5">
-            {activePlayer.heroes.map(hero => {
+        <div className="pointer-events-auto bg-black/80 border border-gray-700 rounded px-3 py-2 flex gap-1.5 overflow-x-auto">
+          {allHeroes
+            .filter(h => h.alive) // Only show alive heroes in roster
+            .sort((a, b) => b.stats.spd - a.stats.spd) // Sort by speed for initiative display
+            .map(hero => {
               const q = queuedActions[hero.id];
               const isSelected = selectedHeroId === hero.id;
-              const hasQueue = !!(q?.moveDest || q?.attackTargetTile);
+              const hasQueue = !!(q?.moveDest || q?.attackTargetTile || q?.gatherTile);
+              const isCurrentResolutionActor = phase === 'resolution' && hero.id === resolutionOrder[resolutionIndex];
+              const ownerColor = hero.owner === 'player1' ? 'cyan' : 'red';
+
               return (
                 <div
                   key={hero.id}
-                  className={`px-2 py-1 rounded text-[10px] font-bold uppercase cursor-pointer transition-all whitespace-nowrap border ${
-                    isSelected ? 'border-cyan-400 bg-cyan-900/40 text-cyan-300'
-                    : hasQueue ? 'border-green-700 bg-green-900/20 text-green-400'
-                    : 'border-gray-700 bg-gray-800/30 text-gray-500 hover:border-gray-500'
-                  } ${!hero.alive ? 'opacity-30 cursor-not-allowed' : ''}`}
+                  className={`px-2 py-1 rounded text-[10px] font-bold uppercase cursor-pointer transition-all whitespace-nowrap border ${isCurrentResolutionActor ? `border-yellow-400 bg-yellow-900/40 text-yellow-300 animate-pulse` : isSelected ? `border-${ownerColor}-400 bg-${ownerColor}-900/40 text-${ownerColor}-300` : hasQueue ? 'border-green-700 bg-green-900/20 text-green-400' : 'border-gray-700 bg-gray-800/30 text-gray-500 hover:border-gray-500'}
+                  ${!hero.alive ? 'opacity-30 cursor-not-allowed' : ''}`}
                   onClick={() => { if (hero.alive) selectHero(hero.id); }}
                   onDoubleClick={() => focusHero(hero.id)}
+                  style={isCurrentResolutionActor ? {borderColor: '#ffea00'} : {}}
                 >
-                  {hero.name}
+                  {hero.name} <span className="text-gray-600">({hero.stats.spd})</span>
                   {hasQueue && <span className="ml-1 text-green-500">✓</span>}
+                  {!hero.alive && <span className="ml-1 text-red-500">☠</span>}
                 </div>
               );
             })}
-          </div>
-        )}
-
-        {/* Resolution tracker */}
-        {phase === 'resolution' && (
-          <div className="bg-black/80 border border-yellow-900/50 rounded px-3 py-2 flex gap-1.5">
-            {resolutionOrder.map((heroId, idx) => {
-              const hero = allHeroes.find(h => h.id === heroId);
-              if (!hero) return null;
-              const isCurrent = idx === resolutionIndex;
-              const isDone = idx < resolutionIndex;
-              const color = hero.owner === 'player1' ? '#00ccff' : '#ff4444';
-              return (
-                <div key={heroId} className={`px-2 py-1 rounded text-[10px] font-bold uppercase whitespace-nowrap border ${
-                  isCurrent ? 'border-yellow-400 bg-yellow-900/40 text-yellow-300 animate-pulse'
-                  : isDone ? 'bg-gray-800/50 text-gray-600 line-through border-transparent' : 'bg-gray-800/30 text-gray-500 border-transparent'
-                }`}>
-                  <span style={{ color: isCurrent ? undefined : isDone ? undefined : color }}>{hero.name}</span> ({hero.stats.spd})
-                </div>
-              );
-            })}
-          </div>
-        )}
+        </div>
 
         {/* Resources */}
         <div className="pointer-events-auto bg-black/80 border border-cyan-900/50 rounded px-3 py-2 text-xs flex gap-3 ml-auto shrink-0">
@@ -120,22 +103,29 @@ export default function GameHUD() {
         </div>
       </div>
 
-      {/* ── Bottom Left: Selected hero panel ── */}
-      {selectedHero && (
+      {/* ── Bottom Left: Hero info panel ── */}
+      {(phase === 'planning' && selectedHero && selectedHero.owner === planningPlayerId) || (phase === 'resolution' && selectedHeroId) ? (
         <div className="absolute bottom-4 left-4 pointer-events-auto">
-          <HeroInfoPanel hero={selectedHero} queued={queuedActions[selectedHero.id]} isPlanning={phase === 'planning' && selectedHero.owner === planningPlayerId} />
+          <HeroInfoPanel
+            hero={selectedHero || allHeroes.find(h => h.id === selectedHeroId)!}
+            queued={queuedActions[selectedHeroId!]}
+            isPlanning={phase === 'planning' && selectedHero?.owner === planningPlayerId}
+            actionMode={actionMode}
+            setActionMode={setActionMode}
+            isAnimating={!!moveAnimation}
+          />
         </div>
-      )}
+      ) : null}
 
-      {/* ── Bottom Right: Target panel (during attack) ── */}
-      {targetHero && selectedHero && (
+      {/* ── Bottom Right: Target panel (during attack resolution or planning target selection) ── */}
+      {targetHero && selectedHero && (actionMode === 'attack' || phase === 'resolution') && (
         <div className="absolute bottom-4 right-4 pointer-events-auto">
           <TargetPanel hero={targetHero} attacker={selectedHero} isPending={!!pendingTarget} />
         </div>
       )}
 
-      {/* ── Bottom Center: End Turn ── */}
-      {phase === 'planning' && (
+      {/* ── Bottom Center: End Planning Button / Resolution Overlay ── */}
+      {phase === 'planning' ? (
         <div className="absolute bottom-4 left-1/2 -translate-x-1/2 pointer-events-auto">
           <button
             onClick={requestEndTurn}
@@ -144,13 +134,10 @@ export default function GameHUD() {
             End Planning <span className="text-gray-500 text-[10px]">[SPACE]</span>
           </button>
         </div>
-      )}
-
-      {/* Resolution overlay */}
-      {phase === 'resolution' && (
+      ) : (
         <div className="absolute bottom-4 left-1/2 -translate-x-1/2">
           <div className="bg-yellow-900/30 border border-yellow-500/30 rounded px-6 py-2 text-yellow-400 text-sm font-bold uppercase tracking-wider animate-pulse">
-            ⚔ Resolving Actions...
+            ⚔ RESOLVING ACTIONS...
           </div>
         </div>
       )}
@@ -159,9 +146,13 @@ export default function GameHUD() {
       {actionMode !== 'idle' && phase === 'planning' && (
         <div className="absolute top-14 left-1/2 -translate-x-1/2">
           <div className={`px-4 py-1.5 rounded text-xs font-bold uppercase tracking-wider ${
-            actionMode === 'move' ? 'bg-green-900/60 border border-green-500/50 text-green-400' : 'bg-red-900/60 border border-red-500/50 text-red-400'
+            actionMode === 'move' ? 'bg-green-900/60 border border-green-500/50 text-green-400' :
+            actionMode === 'attack' ? 'bg-red-900/60 border border-red-500/50 text-red-400' :
+            'bg-yellow-900/60 border border-yellow-500/50 text-yellow-400' // gather
           }`}>
-            {actionMode === 'move' ? '⬡ SELECT MOVE TARGET' : '⚔ SELECT ATTACK TARGET'}
+            {actionMode === 'move' ? '⬡ SELECT MOVE TARGET' :
+            actionMode === 'attack' ? '⚔ SELECT ATTACK TARGET' :
+            '⛏ SELECT GATHER TILE'}
             {pendingTarget && <span className="ml-2 text-white animate-pulse">— Double-click to confirm</span>}
           </div>
         </div>
@@ -191,8 +182,20 @@ export default function GameHUD() {
 
 // === Hero Info Panel (Bottom Left) ===
 
-function HeroInfoPanel({ hero, queued, isPlanning }: { hero: Hero; queued?: QueuedAction; isPlanning: boolean }) {
+function HeroInfoPanel({
+  hero, queued, isPlanning, actionMode, setActionMode, isAnimating,
+}: {
+  hero: Hero; queued?: QueuedAction; isPlanning: boolean; actionMode: ActionMode; setActionMode: (m: ActionMode) => void; isAnimating: boolean;
+}) {
   const color = hero.owner === 'player1' ? '#00ccff' : '#ff4444';
+  const hasQueuedMove = !!queued?.moveDest;
+  const hasQueuedAttack = !!queued?.attackTargetTile;
+  const hasQueuedGather = !!queued?.gatherTile;
+
+  // Check if hero is on a resource tile with resources
+  const gameState = useGameStore(s => s.gameState);
+  const tile = gameState?.grid[hero.position.r][hero.position.q];
+  const canGather = tile?.resourceType && (tile.resourceAmount || 0) > 0;
 
   return (
     <div className="bg-black/85 border rounded-lg px-4 py-3 min-w-[240px] max-w-[270px]" style={{ borderColor: color + '66' }}>
@@ -225,16 +228,56 @@ function HeroInfoPanel({ hero, queued, isPlanning }: { hero: Hero; queued?: Queu
         <Stat label="SPD" value={hero.stats.spd} />
       </div>
 
-      {/* Queued actions display */}
-      {isPlanning && queued && (
-        <div className="border-t border-gray-800 pt-2 mt-1 text-[10px]">
-          {queued.moveDest && <div className="text-green-400">⬡ Move queued → ({queued.moveDest.q}, {queued.moveDest.r})</div>}
-          {queued.attackTargetTile && <div className="text-red-400">⚔ Attack queued</div>}
+      {/* Queued actions display (or action buttons if planning) */}
+      {isPlanning && !isAnimating && (
+        <div className="flex gap-2 border-t border-gray-800 pt-2 mt-2">
+          {/* Move Button */}
+          <button
+            disabled={hasQueuedMove}
+            onClick={() => setActionMode(actionMode === 'move' ? 'idle' : 'move')}
+            className={`flex-1 py-1 rounded text-xs font-bold uppercase transition-all ${
+              actionMode === 'move' ? 'bg-green-700 text-white border border-green-400'
+              : hasQueuedMove ? 'bg-green-900/30 text-green-600 border border-green-800 cursor-not-allowed'
+              : 'bg-green-900/40 text-green-400 border border-green-700 hover:bg-green-800/50'
+            }`}
+          >
+            {hasQueuedMove ? '✓ Move' : '⬡ Move'}
+          </button>
+          {/* Attack Button */}
+          <button
+            disabled={hasQueuedAttack}
+            onClick={() => setActionMode(actionMode === 'attack' ? 'idle' : 'attack')}
+            className={`flex-1 py-1 rounded text-xs font-bold uppercase transition-all ${
+              actionMode === 'attack' ? 'bg-red-700 text-white border border-red-400'
+              : hasQueuedAttack ? 'bg-red-900/30 text-red-600 border border-red-800 cursor-not-allowed'
+              : 'bg-red-900/40 text-red-400 border border-red-700 hover:bg-red-800/50'
+            }`}
+          >
+            {hasQueuedAttack ? '✓ Attack' : '⚔ Attack'}
+          </button>
+          {/* Gather Button */}
+          {canGather && (
+            <button
+              disabled={hasQueuedGather}
+              onClick={() => setActionMode(actionMode === 'gather' ? 'idle' : 'gather')}
+              className={`flex-1 py-1 rounded text-xs font-bold uppercase transition-all ${
+                actionMode === 'gather' ? 'bg-yellow-700 text-white border border-yellow-400'
+                : hasQueuedGather ? 'bg-yellow-900/30 text-yellow-600 border border-yellow-800 cursor-not-allowed'
+                : 'bg-yellow-900/40 text-yellow-400 border border-yellow-700 hover:bg-yellow-800/50'
+              }`}
+            >
+              {hasQueuedGather ? '✓ Gather' : '⛏ Gather'}
+            </button>
+          )}
         </div>
       )}
 
-      {isPlanning && !queued && (
-        <div className="text-[10px] text-gray-600 italic">Click hero to show actions</div>
+      {isPlanning && isAnimating && (
+        <div className="border-t border-gray-800 pt-2 mt-2 text-[10px] text-gray-500 animate-pulse">Hero is moving...</div>
+      )}
+
+      {!isPlanning && (
+        <div className="border-t border-gray-800 pt-2 mt-2 text-[10px] text-gray-500">Awaiting resolution...</div>
       )}
     </div>
   );

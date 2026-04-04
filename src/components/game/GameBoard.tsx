@@ -1,10 +1,10 @@
 'use client';
 
 import { useMemo, useRef, useEffect, useState } from 'react';
-import { Canvas, useFrame, useThree } from '@react-three/fiber';
+import { Canvas, useFrame, useThree, Vector3 } from '@react-three/fiber';
 import { OrthographicCamera, Html } from '@react-three/drei';
 import * as THREE from 'three';
-import { useGameStore, CameraConfig, MoveAnimation } from '@/lib/game-store';
+import { useGameStore, CameraConfig, MoveAnimation, DamageIndicator } from '@/lib/game-store';
 import OctileTileMesh from './OctileTile';
 
 // === Camera Controller ===
@@ -14,6 +14,7 @@ function CameraController() {
   const cameraConfig = useGameStore(s => s.cameraConfig);
   const cameraConfigVersion = useGameStore(s => s.cameraConfigVersion);
   const resolutionLocked = useGameStore(s => s.resolutionLocked);
+  const onCameraArrived = useGameStore(s => s.onCameraArrived);
 
   const targetRef = useRef(new THREE.Vector3(10, 0, 10));
   const angleRef = useRef(Math.PI / 4);
@@ -21,6 +22,7 @@ function CameraController() {
   const distanceRef = useRef(12);
   const animatingRef = useRef(false);
   const animTargetRef = useRef<CameraConfig | null>(null);
+  const pendingAnimRef = useRef(false);
   const keysRef = useRef<Set<string>>(new Set());
   const isDraggingRef = useRef<'left' | 'right' | null>(null);
   const lastMouseRef = useRef({ x: 0, y: 0 });
@@ -28,14 +30,9 @@ function CameraController() {
 
   const ELEVATION = 12;
 
-  // When store pushes a new cameraConfig, start animating.
-  // Uses version counter so useEffect fires on every config push.
-  const pendingAnimRef = useRef(false);
   useEffect(() => {
     if (!cameraConfig) return;
     animTargetRef.current = { ...cameraConfig, target: cameraConfig.target.clone() };
-    // Set a pending flag; the useFrame loop will pick it up.
-    // This avoids race conditions with mouse handlers clearing animatingRef.
     pendingAnimRef.current = true;
   }, [cameraConfigVersion]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -66,8 +63,8 @@ function CameraController() {
       lastMouseRef.current = { x: e.clientX, y: e.clientY };
       dragDistRef.current += Math.abs(dx) + Math.abs(dy);
       
-      // Any drag interrupts animation
       if (drag === 'left' || !useGameStore.getState().resolutionLocked) {
+        // Only left drag or non-resolution pan interrupts animation
         animatingRef.current = false;
       }
 
@@ -105,6 +102,12 @@ function CameraController() {
     const keys = keysRef.current;
     const locked = useGameStore.getState().resolutionLocked;
 
+    // Pick up pending animation (set by useEffect, immune to mouse race)
+    if (pendingAnimRef.current) {
+      pendingAnimRef.current = false;
+      animatingRef.current = true;
+    }
+
     // Only camera-control keys (WASD/QE) interrupt animation
     const cameraKeys = ['w', 'a', 's', 'd', 'q', 'e'];
     const hasCameraKey = cameraKeys.some(k => keys.has(k));
@@ -121,12 +124,6 @@ function CameraController() {
     }
     if (keys.has('q')) angleRef.current -= 0.02;
     if (keys.has('e')) angleRef.current += 0.02;
-
-    // Pick up pending animation (set by useEffect, immune to mouse race)
-    if (pendingAnimRef.current) {
-      pendingAnimRef.current = false;
-      animatingRef.current = true;
-    }
 
     // Smooth camera animation — actually reaches the target
     if (animatingRef.current && animTargetRef.current) {
@@ -145,8 +142,7 @@ function CameraController() {
         angleRef.current = animTargetRef.current.angle;
         animatingRef.current = false;
         
-        // Signal that camera arrived (for resolution pacing)
-        useGameStore.getState().onCameraArrived?.();
+        onCameraArrived?.(); // Notify store that camera has arrived
       }
     }
 
@@ -181,11 +177,17 @@ function ActionToolbar({ heroId }: { heroId: string }) {
   const queued = queuedActions[heroId];
   const hasQueuedMove = !!queued?.moveDest;
   const hasQueuedAttack = !!queued?.attackTargetTile;
+  const hasQueuedGather = !!queued?.gatherTile;
+
+  // Check if hero is on a resource tile with resources
+  const tile = gameState.grid[hero.position.r][hero.position.q];
+  const canGather = tile.resourceType && (tile.resourceAmount || 0) > 0;
 
   return (
     <group position={[hero.position.q + 0.55, 0.5, hero.position.r]}>
       <Html center style={{ pointerEvents: 'auto' }}>
         <div className="flex flex-col gap-1 animate-in fade-in slide-in-from-left-2 duration-200">
+          {/* Move Button */}
           {!hasQueuedMove && (
             <button
               onClick={(e) => { e.stopPropagation(); setActionMode('move'); }}
@@ -198,6 +200,7 @@ function ActionToolbar({ heroId }: { heroId: string }) {
           {hasQueuedMove && (
             <div className="w-7 h-7 rounded bg-green-900/30 border border-green-800/40 flex items-center justify-center text-[10px] text-green-600">✓</div>
           )}
+          {/* Attack Button */}
           {!hasQueuedAttack && (
             <button
               onClick={(e) => { e.stopPropagation(); setActionMode('attack'); }}
@@ -209,6 +212,19 @@ function ActionToolbar({ heroId }: { heroId: string }) {
           )}
           {hasQueuedAttack && (
             <div className="w-7 h-7 rounded bg-red-900/30 border border-red-800/40 flex items-center justify-center text-[10px] text-red-600">✓</div>
+          )}
+          {/* Gather Button */}
+          {!hasQueuedGather && canGather && (
+            <button
+              onClick={(e) => { e.stopPropagation(); setActionMode('gather'); }}
+              className="w-7 h-7 rounded bg-yellow-900/80 hover:bg-yellow-700/90 border border-yellow-500/60 flex items-center justify-center text-sm transition-all hover:scale-110 active:scale-95"
+              title="Gather Resources"
+            >
+              ⛏️
+            </button>
+          )}
+          {hasQueuedGather && (
+            <div className="w-7 h-7 rounded bg-yellow-900/30 border border-yellow-800/40 flex items-center justify-center text-[10px] text-yellow-600">✓</div>
           )}
         </div>
       </Html>
@@ -258,6 +274,59 @@ function AnimatedHero({ animation }: { animation: MoveAnimation }) {
   );
 }
 
+// === Floating Damage Indicator (HTML overlay) ===
+
+function FloatingDamageIndicator({ indicator }: { indicator: DamageIndicator }) {
+  const [offsetY, setOffsetY] = useState(0);
+  const [opacity, setOpacity] = useState(1);
+
+  useEffect(() => {
+    const animDuration = indicator.amount === 'MISS' ? 1200 : 1000;
+    const startTime = Date.now();
+
+    const animate = () => {
+      const elapsed = Date.now() - startTime;
+      const progress = elapsed / animDuration;
+
+      if (progress < 1) {
+        setOffsetY(0.8 * progress); // Float up
+        setOpacity(1 - progress); // Fade out
+        requestAnimationFrame(animate);
+      } else {
+        setOffsetY(0.8);
+        setOpacity(0);
+      }
+    };
+    requestAnimationFrame(animate);
+  }, [indicator]);
+
+  const isMiss = indicator.amount === 'MISS';
+  const text = isMiss ? 'MISS!' : `-${indicator.amount}`;
+  const color = isMiss ? '#ff4444' : '#ffffff';
+  const shadowColor = isMiss ? 'rgba(255,0,0,0.4)' : 'rgba(0,0,0,0.8)';
+
+  return (
+    <group position={[indicator.q, 0.5 + offsetY, indicator.r]}>
+      <Html center style={{ pointerEvents: 'none', opacity }}>
+        <div
+          className="font-bold text-lg select-none"
+          style={{
+            color,
+            textShadow: `0 0 8px ${shadowColor}, 0 0 4px ${shadowColor}`,
+            whiteSpace: 'nowrap',
+            animation: isMiss ? 'bounce 0.4s infinite alternate' : 'none',
+          }}
+        >
+          {text}
+        </div>
+      </Html>
+    </group>
+  );
+}
+
+// Add bounce animation keyframes (CSS can be injected or assumed via Tailwind config)
+// For now, will assume it's part of the global CSS or Tailwind JIT.
+
 // === Game Scene ===
 
 function GameScene() {
@@ -270,7 +339,7 @@ function GameScene() {
   const currentPath = useGameStore(s => s.currentPath);
   const pendingTarget = useGameStore(s => s.pendingTarget);
   const moveAnimation = useGameStore(s => s.moveAnimation);
-  const missIndicator = useGameStore(s => s.missIndicator);
+  const damageIndicators = useGameStore(s => s.damageIndicators);
   const planningPlayerId = useGameStore(s => s.planningPlayerId);
   const queuedActions = useGameStore(s => s.queuedActions);
   const phase = useGameStore(s => s.phase);
@@ -316,7 +385,7 @@ function GameScene() {
       <OrthographicCamera makeDefault zoom={120} position={[10, 12, 25]} />
       <CameraController />
 
-      {/* Lighting */}
+      {/* Lighting — bright enough to see everything */}
       <ambientLight intensity={0.6} color="#778899" />
       <directionalLight position={[20, 30, 15]} intensity={1.2} color="#bbccdd" />
       <directionalLight position={[-15, 20, -10]} intensity={0.5} color="#667788" />
@@ -375,16 +444,9 @@ function GameScene() {
 
       {moveAnimation && <AnimatedHero animation={moveAnimation} />}
 
-      {/* Miss indicator */}
-      {missIndicator && (
-        <group position={[missIndicator.q, 0.5, missIndicator.r]}>
-          <Html center style={{ pointerEvents: 'none' }}>
-            <div className="text-red-400 font-bold text-lg animate-bounce select-none" style={{ textShadow: '0 0 8px rgba(0,0,0,0.8), 0 0 4px rgba(255,0,0,0.3)' }}>
-              MISS!
-            </div>
-          </Html>
-        </group>
-      )}
+      {damageIndicators.map(d => (
+        <FloatingDamageIndicator key={d.id} indicator={d} />
+      ))}
     </>
   );
 }

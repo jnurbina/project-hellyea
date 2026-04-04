@@ -43,6 +43,15 @@ function findHero(gs: GameState, heroId: string): Hero | undefined {
   return getAllHeroes(gs).find(h => h.id === heroId);
 }
 
+/** Build the initiative order: all living heroes sorted by SPD descending */
+function buildInitiativeOrder(gs: GameState): string[] {
+  return getAllHeroes(gs)
+    .filter(h => h.alive)
+    .sort((a, b) => b.stats.spd - a.stats.spd)
+    .map(h => h.id);
+}
+
+/** Compute all tiles reachable by a hero within their MOV range */
 function computeMoveTiles(gs: GameState, hero: Hero): Set<string> {
   const reachable = new Set<string>();
   const occupied = getOccupiedTiles(gs, hero.id);
@@ -121,15 +130,33 @@ export function truncatePathToMovement(
   return result;
 }
 
+// Helper to create camera config with auto-incrementing version
+let _cameraVersion = 0;
+function makeCameraConfig(target: THREE.Vector3, angle: number, zoom: number): { cameraConfig: CameraConfig; cameraConfigVersion: number } {
+  return {
+    cameraConfig: { target: target.clone(), angle, zoom },
+    cameraConfigVersion: ++_cameraVersion,
+  };
+}
+
+function getPlayerMidpoint(gs: GameState, playerId: string): THREE.Vector3 {
+  const player = gs.players[playerId];
+  const living = player.heroes.filter(h => h.alive);
+  if (living.length === 0) return new THREE.Vector3(gs.mapWidth / 2, 0, gs.mapHeight / 2);
+  const sum = living.reduce((acc, h) => acc.add(new THREE.Vector3(h.position.q, 0, h.position.r)), new THREE.Vector3());
+  return sum.divideScalar(living.length);
+}
+
 // === Types ===
 
-export type ActionMode = 'idle' | 'move' | 'attack';
+export type ActionMode = 'idle' | 'move' | 'attack' | 'gather';
 export type GamePhase = 'planning' | 'resolution';
 
 export interface QueuedAction {
-  movePath?: { q: number; r: number }[];  // full path for animation
+  movePath?: { q: number; r: number }[];
   moveDest?: { q: number; r: number };
-  attackTargetTile?: { q: number; r: number };  // tile position, not hero ID
+  attackTargetTile?: { q: number; r: number };
+  gatherTile?: { q: number; r: number };
 }
 
 export interface CameraConfig {
@@ -145,20 +172,27 @@ export interface MoveAnimation {
   progress: number;
 }
 
+export interface DamageIndicator {
+  id: string;
+  q: number; r: number;
+  amount: number | 'MISS';
+  color: string;
+}
+
 interface GameStore {
   gameState: GameState | null;
 
   // Turn structure
   phase: GamePhase;
   round: number;
-  planningPlayerId: string;  // whose turn to plan
-  queuedActions: Record<string, QueuedAction>;  // heroId → queued action
-  selectedHeroId: string | null;  // hero currently being configured
+  planningPlayerId: string;
+  queuedActions: Record<string, QueuedAction>;
+  selectedHeroId: string | null;
 
   // Resolution
-  resolutionOrder: string[];  // hero IDs by SPD for resolution
+  resolutionOrder: string[];
   resolutionIndex: number;
-  resolutionLocked: boolean;  // camera pan lock during resolution
+  resolutionLocked: boolean;
 
   // UI state
   actionMode: ActionMode;
@@ -175,7 +209,8 @@ interface GameStore {
   cameraConfigVersion: number;
   moveAnimation: MoveAnimation | null;
   onCameraArrived: (() => void) | null;
-  missIndicator: { q: number; r: number } | null; // flash 'MISS' on this tile
+  missIndicator: { q: number; r: number } | null;
+  damageIndicators: DamageIndicator[]; // New: for floating damage numbers
 
   // Actions
   initGame: (mapWidth?: number, mapHeight?: number) => void;
@@ -189,8 +224,8 @@ interface GameStore {
   cancelEndTurn: () => void;
   tickMoveAnimation: (delta: number) => boolean;
   processNextResolution: () => void;
-  executeAttack: () => void; // deprecated
   executeAttackTile: (attackerId: string, targetTile: { q: number; r: number }) => void;
+  executeGather: (heroId: string, targetTile: { q: number; r: number }) => void; // New: gather action
   startResolution: () => void;
   startNewRound: () => void;
   updateVisibility: () => void;
@@ -227,6 +262,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
   moveAnimation: null,
   onCameraArrived: null,
   missIndicator: null,
+  damageIndicators: [],
 
   initGame: (mapWidth = 20, mapHeight = 20) => {
     const grid = generateGrid(mapWidth, mapHeight, Date.now());
@@ -253,7 +289,6 @@ export const useGameStore = create<GameStore>((set, get) => ({
       phase: 'planning', turn: 1, grid, players, pendingActions: { player1: [], player2: [] }, mapWidth, mapHeight,
     };
 
-    // Camera at P1's heroes
     const p1mid = getPlayerMidpoint(gameState, 'player1');
 
     set({
@@ -266,6 +301,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
       resolutionLocked: false,
       actionMode: 'idle',
       showEndTurnConfirm: false,
+      missIndicator: null,
+      damageIndicators: [],
       ...makeCameraConfig(p1mid, Math.PI * 1.25, 120),
     });
 
@@ -274,8 +311,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   selectHero: (heroId) => {
     const { gameState, planningPlayerId, phase } = get();
-    if (!gameState || phase !== 'planning') { set({ selectedHeroId: null, actionMode: 'idle', moveTiles: new Set(), attackTiles: new Set(), pendingTarget: null, targetHeroId: null }); return; }
-    if (!heroId) { set({ selectedHeroId: null, actionMode: 'idle', moveTiles: new Set(), attackTiles: new Set(), pendingTarget: null, targetHeroId: null }); return; }
+    if (!gameState || phase !== 'planning') { set({ selectedHeroId: null, actionMode: 'idle', moveTiles: new Set(), attackTiles: new Set(), pendingTarget: null, targetHeroId: null, currentPath: null }); return; }
+    if (!heroId) { set({ selectedHeroId: null, actionMode: 'idle', moveTiles: new Set(), attackTiles: new Set(), pendingTarget: null, targetHeroId: null, currentPath: null }); return; }
     const hero = findHero(gameState, heroId);
     if (!hero || hero.owner !== planningPlayerId || !hero.alive) { set({ selectedHeroId: null, actionMode: 'idle' }); return; }
     set({ selectedHeroId: heroId, actionMode: 'idle', moveTiles: new Set(), attackTiles: new Set(), pendingTarget: null, targetHeroId: null, currentPath: null });
@@ -291,12 +328,19 @@ export const useGameStore = create<GameStore>((set, get) => ({
     if (mode === 'move' && !queued?.moveDest) {
       set({ actionMode: 'move', moveTiles: computeMoveTiles(gameState, hero), attackTiles: new Set(), pendingTarget: null, targetHeroId: null });
     } else if (mode === 'attack' && !queued?.attackTargetTile) {
-      // If hero has a queued move, compute attack from that position
       let attackHero = hero;
       if (queued?.moveDest) {
         attackHero = { ...hero, position: { ...queued.moveDest } };
       }
       set({ actionMode: 'attack', attackTiles: computeAttackTiles(gameState, attackHero), moveTiles: new Set(), pendingTarget: null, targetHeroId: null });
+    } else if (mode === 'gather' && !queued?.gatherTile) { // New gather mode
+      // Hero must be on a resource tile, and resource amount > 0
+      const tile = gameState.grid[hero.position.r][hero.position.q];
+      if (tile.resourceType && (tile.resourceAmount || 0) > 0) {
+        set({ actionMode: 'gather', moveTiles: new Set(), attackTiles: new Set(), pendingTarget: null, targetHeroId: null });
+      } else {
+        set({ actionMode: 'idle', moveTiles: new Set(), attackTiles: new Set(), pendingTarget: null, targetHeroId: null });
+      }
     } else {
       set({ actionMode: 'idle', moveTiles: new Set(), attackTiles: new Set(), pendingTarget: null, targetHeroId: null });
     }
@@ -316,6 +360,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
     } else if (actionMode === 'attack') {
       const enemy = getAllHeroes(gameState).find(h => h.alive && h.position.q === q && h.position.r === r && h.owner !== hero.owner);
       set({ hoveredTile: { q, r }, currentPath: null, targetHeroId: enemy?.id || null });
+    } else if (actionMode === 'gather') {
+      // No hover logic for gather, just check if it's the hero's tile
+      const isHeroTile = hero.position.q === q && hero.position.r === r;
+      set({ hoveredTile: isHeroTile ? { q, r } : null, currentPath: null });
     } else {
       set({ hoveredTile: { q, r }, currentPath: null });
     }
@@ -327,7 +375,6 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const { gameState, selectedHeroId, actionMode, pendingTarget, moveAnimation, phase, planningPlayerId } = get();
     if (!gameState || phase !== 'planning' || moveAnimation) return;
 
-    // If no hero selected, try to select one
     if (!selectedHeroId) {
       const heroOnTile = getAllHeroes(gameState).find(h => h.alive && h.position.q === q && h.position.r === r && h.owner === planningPlayerId);
       if (heroOnTile) get().selectHero(heroOnTile.id);
@@ -341,7 +388,6 @@ export const useGameStore = create<GameStore>((set, get) => ({
     if (actionMode === 'move') {
       if (!get().moveTiles.has(tileKey)) return;
       if (pendingTarget && pendingTarget.q === q && pendingTarget.r === r) {
-        // Confirmed move — queue it
         const occupied = getOccupiedTiles(gameState, hero.id);
         const fullPath = findPath(gameState.grid, hero.position.q, hero.position.r, q, r, Infinity, occupied);
         if (!fullPath || fullPath.length < 2) return;
@@ -358,12 +404,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
       }
     } else if (actionMode === 'attack') {
       if (!get().attackTiles.has(tileKey)) return;
-
-      // Can target any tile in range (empty or occupied)
       const enemy = getAllHeroes(gameState).find(h => h.alive && h.position.q === q && h.position.r === r && h.owner !== hero.owner);
 
       if (pendingTarget && pendingTarget.q === q && pendingTarget.r === r) {
-        // Confirmed attack — queue the TILE position
         const newQueued = { ...get().queuedActions };
         newQueued[hero.id] = { ...newQueued[hero.id], attackTargetTile: { q, r } };
 
@@ -371,8 +414,21 @@ export const useGameStore = create<GameStore>((set, get) => ({
       } else {
         set({ pendingTarget: { q, r }, targetHeroId: enemy?.id || null });
       }
+    } else if (actionMode === 'gather') { // New gather click handler
+      const tile = gameState.grid[hero.position.r][hero.position.q];
+      if (!tile.resourceType || (tile.resourceAmount || 0) <= 0) return; // Cannot gather if no resource or empty
+      
+      if (pendingTarget && pendingTarget.q === q && pendingTarget.r === r && hero.position.q === q && hero.position.r === r) {
+        // Confirmed gather on hero's tile
+        const newQueued = { ...get().queuedActions };
+        newQueued[hero.id] = { ...newQueued[hero.id], gatherTile: { q, r } };
+
+        set({ queuedActions: newQueued, actionMode: 'idle', pendingTarget: null });
+      } else if (hero.position.q === q && hero.position.r === r) {
+        // First click on hero's tile for gather
+        set({ pendingTarget: { q, r } });
+      }
     } else {
-      // Idle mode — clicking on own hero selects, clicking elsewhere selects hero on tile
       const heroOnTile = getAllHeroes(gameState).find(h => h.alive && h.position.q === q && h.position.r === r && h.owner === planningPlayerId);
       if (heroOnTile) {
         get().selectHero(heroOnTile.id);
@@ -389,7 +445,6 @@ export const useGameStore = create<GameStore>((set, get) => ({
     set({ showEndTurnConfirm: false });
 
     if (planningPlayerId === 'player1') {
-      // Switch to P2 planning
       const { gameState } = get();
       if (!gameState) return;
       const p2mid = getPlayerMidpoint(gameState, 'player2');
@@ -406,7 +461,6 @@ export const useGameStore = create<GameStore>((set, get) => ({
       });
       get().updateVisibility();
     } else {
-      // Both players done — start resolution
       get().startResolution();
     }
   },
@@ -419,16 +473,14 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const { gameState, queuedActions } = get();
     if (!gameState) return;
 
-    // Build resolution order: all heroes with queued actions, sorted by SPD
     const allHeroes = getAllHeroes(gameState).filter(h => h.alive);
     const order = allHeroes
-      .filter(h => queuedActions[h.id]?.moveDest || queuedActions[h.id]?.attackTargetTile)
+      .filter(h => queuedActions[h.id]?.moveDest || queuedActions[h.id]?.attackTargetTile || queuedActions[h.id]?.gatherTile) // Include gather
       .sort((a, b) => b.stats.spd - a.stats.spd)
       .map(h => h.id);
 
     if (order.length === 0) {
-      // Nothing queued, skip to new round
-      get().startNewRound();
+      setTimeout(() => get().startNewRound(), 800);
       return;
     }
 
@@ -441,9 +493,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
       actionMode: 'idle',
       moveTiles: new Set(),
       attackTiles: new Set(),
+      damageIndicators: [], // Clear damage indicators from previous round
     });
 
-    // Process first action
     get().processNextResolution();
   },
 
@@ -466,13 +518,11 @@ export const useGameStore = create<GameStore>((set, get) => ({
       return;
     }
 
-    // Step 1: Pan camera to the hero, WAIT for arrival, then execute
     set({
-      selectedHeroId: heroId, // show who's acting
+      selectedHeroId: heroId,
       ...makeCameraConfig(new THREE.Vector3(hero.position.q, 0, hero.position.r), get().cameraConfig?.angle ?? Math.PI / 4, 120),
       onCameraArrived: () => {
         set({ onCameraArrived: null });
-        // Brief pause after camera arrives so player can see who's acting
         setTimeout(() => {
           if (action.movePath && action.movePath.length > 1) {
             set({
@@ -485,6 +535,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
             });
           } else if (action.attackTargetTile) {
             get().executeAttackTile(heroId, action.attackTargetTile);
+          } else if (action.gatherTile) { // New gather execution
+            get().executeGather(heroId, action.gatherTile);
           } else {
             set({ resolutionIndex: resolutionIndex + 1 });
             setTimeout(() => get().processNextResolution(), 500);
@@ -493,8 +545,6 @@ export const useGameStore = create<GameStore>((set, get) => ({
       },
     });
   },
-
-  executeAttack: () => { /* deprecated, use executeAttackTile */ },
 
   executeAttackTile: (attackerId: string, targetTile: { q: number; r: number }) => {
     const { gameState, resolutionIndex } = get();
@@ -508,12 +558,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
       return;
     }
 
-    // Check if anyone is actually on that tile NOW (at resolution time)
     const target = getAllHeroes(gs).find(
       h => h.alive && h.position.q === targetTile.q && h.position.r === targetTile.r && h.owner !== attacker.owner
     );
 
-    // Pan camera to the targeted tile
     set({
       targetHeroId: target?.id || null,
       selectedHeroId: attackerId,
@@ -521,25 +569,71 @@ export const useGameStore = create<GameStore>((set, get) => ({
       onCameraArrived: () => {
         set({ onCameraArrived: null });
         setTimeout(() => {
+          let damageAmount: number | 'MISS';
           if (target) {
-            // Hit! Apply damage
             const damage = Math.max(1, attacker.stats.atk - target.stats.def);
             target.stats.hp -= damage;
             if (target.stats.hp <= 0) { target.stats.hp = 0; target.alive = false; }
             attacker.hasAttacked = true;
-            set({ gameState: gs });
+            damageAmount = damage;
           } else {
-            // Miss! Show indicator
             attacker.hasAttacked = true;
-            set({ gameState: gs, missIndicator: { q: targetTile.q, r: targetTile.r } });
+            damageAmount = 'MISS';
           }
 
-          // Hold so player sees result, then clear and advance
+          const newDamageIndicators = [...get().damageIndicators, {
+            id: THREE.MathUtils.generateUUID(),
+            q: targetTile.q, r: targetTile.r,
+            amount: damageAmount,
+            color: damageAmount === 'MISS' ? '#ff4444' : '#ffffff',
+          }];
+
+          set({ gameState: gs, damageIndicators: newDamageIndicators });
+
           setTimeout(() => {
-            set({ resolutionIndex: resolutionIndex + 1, targetHeroId: null, selectedHeroId: null, missIndicator: null });
+            // Clear this specific damage indicator after animation
+            set(s => ({ damageIndicators: s.damageIndicators.filter(d => d.id !== newDamageIndicators[0].id) }));
+            set({ resolutionIndex: resolutionIndex + 1, targetHeroId: null, selectedHeroId: null });
             setTimeout(() => get().processNextResolution(), 500);
-          }, target ? 1000 : 1200); // longer hold on miss so they can read it
+          }, damageAmount === 'MISS' ? 1200 : 1000); 
         }, 300);
+      },
+    });
+  },
+
+  executeGather: (heroId: string, targetTile: { q: number; r: number }) => {
+    const { gameState, resolutionIndex } = get();
+    if (!gameState) return;
+
+    const gs = cloneGameState(gameState);
+    const hero = findHero(gs, heroId);
+    const tile = gs.grid[targetTile.r][targetTile.q];
+
+    if (!hero || !hero.alive || !tile.resourceType || (tile.resourceAmount || 0) <= 0) {
+      set({ resolutionIndex: resolutionIndex + 1 });
+      setTimeout(() => get().processNextResolution(), 300);
+      return;
+    }
+
+    // Add resource to player
+    const player = gs.players[hero.owner];
+    if (player) {
+      const gatheredAmount = Math.min(hero.stats.mov, tile.resourceAmount || 0); // Gather up to hero MOV, or remaining
+      player.resources[tile.resourceType] = (player.resources[tile.resourceType] || 0) + gatheredAmount;
+      tile.resourceAmount! -= gatheredAmount;
+    }
+    hero.hasMoved = true; // Gathering counts as a move action
+
+    set({
+      gameState: gs,
+      selectedHeroId: heroId, // Keep hero selected to show panel
+      ...makeCameraConfig(new THREE.Vector3(targetTile.q, 0, targetTile.r), get().cameraConfig?.angle ?? Math.PI / 4, 120),
+      onCameraArrived: () => {
+        set({ onCameraArrived: null });
+        setTimeout(() => {
+          set({ resolutionIndex: resolutionIndex + 1, selectedHeroId: null });
+          setTimeout(() => get().processNextResolution(), 800); // Shorter pause for gather
+        }, 500);
       },
     });
   },
@@ -549,11 +643,21 @@ export const useGameStore = create<GameStore>((set, get) => ({
     if (!gameState) return;
 
     const gs = cloneGameState(gameState);
-    // Reset all hero actions
     for (const player of Object.values(gs.players)) {
       for (const hero of player.heroes) {
         hero.hasMoved = false;
         hero.hasAttacked = false;
+        // New: Respawn dead heroes
+        if (!hero.alive) {
+          hero.respawnTimer--;
+          if (hero.respawnTimer <= 0) {
+            hero.alive = true;
+            hero.stats.hp = hero.stats.maxHp; // Full HP on respawn
+            // Respawn at town center or near start
+            if (hero.owner === 'player1') hero.position = { q: 2, r: 2 };
+            else hero.position = { q: gs.mapWidth - 3, r: gs.mapHeight - 3 };
+          }
+        }
       }
     }
     gs.turn = round + 1;
@@ -575,6 +679,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
       attackTiles: new Set(),
       pendingTarget: null,
       targetHeroId: null,
+      missIndicator: null,
+      damageIndicators: [],
       ...makeCameraConfig(p1mid, Math.PI * 1.25, 120),
     });
 
@@ -591,7 +697,6 @@ export const useGameStore = create<GameStore>((set, get) => ({
     if (newProgress >= 1) {
       const nextIndex = moveAnimation.currentIndex + 1;
       if (nextIndex >= moveAnimation.path.length - 1) {
-        // Animation complete — commit move
         const gs = cloneGameState(gameState);
         const hero = findHero(gs, moveAnimation.heroId);
         if (hero) {
@@ -601,16 +706,18 @@ export const useGameStore = create<GameStore>((set, get) => ({
           set({ gameState: gs, moveAnimation: null });
           get().updateVisibility();
 
-          // Now check if this hero also has an attack queued
           const action = queuedActions[moveAnimation.heroId];
           if (action?.attackTargetTile) {
             setTimeout(() => {
               get().executeAttackTile(moveAnimation.heroId, action.attackTargetTile!);
             }, 300);
+          } else if (action?.gatherTile) { // New gather after move
+            setTimeout(() => {
+              get().executeGather(moveAnimation.heroId, action.gatherTile!);
+            }, 300);
           } else {
-            // Move to next resolution
             set({ resolutionIndex: resolutionIndex + 1 });
-            setTimeout(() => get().processNextResolution(), 300);
+            setTimeout(() => get().processNextResolution(), 500);
           }
         } else {
           set({ moveAnimation: null });
@@ -629,16 +736,13 @@ export const useGameStore = create<GameStore>((set, get) => ({
   updateVisibility: () => {
     const { gameState } = get();
     if (!gameState) return;
-
     const gs = cloneGameState(gameState);
-
-    // Fog of war disabled — all tiles visible
+    // Fog of war disabled for prototype — all tiles visible
     for (const row of gs.grid) {
       for (const tile of row) {
         tile.visible = 'visible';
       }
     }
-
     set({ gameState: gs });
   },
 
@@ -652,20 +756,3 @@ export const useGameStore = create<GameStore>((set, get) => ({
     });
   },
 }));
-
-// Helper to create camera config with auto-incrementing version
-let _cameraVersion = 0;
-function makeCameraConfig(target: THREE.Vector3, angle: number, zoom: number): { cameraConfig: CameraConfig; cameraConfigVersion: number } {
-  return {
-    cameraConfig: { target: target.clone(), angle, zoom },
-    cameraConfigVersion: ++_cameraVersion,
-  };
-}
-
-function getPlayerMidpoint(gs: GameState, playerId: string): THREE.Vector3 {
-  const player = gs.players[playerId];
-  const living = player.heroes.filter(h => h.alive);
-  if (living.length === 0) return new THREE.Vector3(gs.mapWidth / 2, 0, gs.mapHeight / 2);
-  const sum = living.reduce((acc, h) => acc.add(new THREE.Vector3(h.position.q, 0, h.position.r)), new THREE.Vector3());
-  return sum.divideScalar(living.length);
-}
