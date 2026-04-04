@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useRef, useEffect } from 'react';
+import { useMemo, useRef, useEffect, useCallback } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrthographicCamera } from '@react-three/drei';
 import * as THREE from 'three';
@@ -8,88 +8,186 @@ import { useGameStore, CameraConfig } from '@/lib/game-store';
 import { octileDistance } from '@/lib/grid';
 import OctileTileMesh from './OctileTile';
 
-// Helper to smoothly animate camera properties
-function useSmoothCamera(config: CameraConfig | null) {
-  const { camera } = useThree();
-  
-  useFrame((_, delta) => {
-    if (!config) return;
-    const ortho = camera as THREE.OrthographicCamera;
-    
-    // Lerp values for smooth transition
-    const lerpFactor = delta * 3;
-    camera.position.lerp(
-      new THREE.Vector3(
-        config.target.x + Math.sin(config.angle) * 15,
-        15, // a bit lower for a more personal view
-        config.target.z + Math.cos(config.angle) * 15
-      ),
-      lerpFactor
-    );
-    ortho.zoom = THREE.MathUtils.lerp(ortho.zoom, config.zoom, lerpFactor);
-    
-    camera.lookAt(config.target);
-    ortho.updateProjectionMatrix();
-  });
-}
-
+/**
+ * Full camera controller:
+ * - Animates to store's cameraConfig on turn change
+ * - Left-drag rotates, right-drag pans, scroll zooms
+ * - WASD pans, QE rotates (all relative to current angle)
+ * - User input interrupts the snap animation
+ */
 function CameraController() {
-  const { gl } = useThree();
+  const { camera, gl } = useThree();
   const cameraConfig = useGameStore(s => s.cameraConfig);
-  useSmoothCamera(cameraConfig); // Apply smooth transitions
 
-  const isDraggingRef = useRef(false);
-  const dragStartPos = useRef({ x: 0, y: 0 });
+  // Live camera state (refs so they persist across frames without re-renders)
+  const targetRef = useRef(new THREE.Vector3(10, 0, 10));
+  const angleRef = useRef(Math.PI / 4);
+  const zoomRef = useRef(60);
+  const distanceRef = useRef(15);
+
+  // Animation state
+  const animatingRef = useRef(false);
+  const animTargetRef = useRef<CameraConfig | null>(null);
+  const animProgressRef = useRef(0);
+
+  // Input state
+  const keysRef = useRef<Set<string>>(new Set());
+  const isDraggingRef = useRef<'left' | 'right' | null>(null);
+  const lastMouseRef = useRef({ x: 0, y: 0 });
+  const dragDistRef = useRef(0);
+
+  const PAN_SPEED = 0.3;
+  const ROTATE_SPEED = 0.02;
+  const MOUSE_ROTATE_SPEED = 0.008;
+  const MOUSE_PAN_SPEED = 0.05;
+  const ELEVATION = 15;
+
+  // When store pushes a new cameraConfig, start animating toward it
+  useEffect(() => {
+    if (!cameraConfig) return;
+    animTargetRef.current = cameraConfig;
+    animProgressRef.current = 0;
+    animatingRef.current = true;
+  }, [cameraConfig]);
+
+  // Expose drag state for click suppression
+  useEffect(() => {
+    (window as any).__cameraDragDist = dragDistRef;
+  }, []);
 
   useEffect(() => {
     const canvas = gl.domElement;
-    const handleMouseDown = (e: MouseEvent) => {
-      dragStartPos.current = { x: e.clientX, y: e.clientY };
-      isDraggingRef.current = false;
-    };
-    const handleMouseMove = (e: MouseEvent) => {
-      const dx = Math.abs(e.clientX - dragStartPos.current.x);
-      const dy = Math.abs(e.clientY - dragStartPos.current.y);
-      if (dx > 5 || dy > 5) { // Dead zone to distinguish click from drag
-        isDraggingRef.current = true;
-      }
-    };
-    const handleMouseUp = (e: MouseEvent) => {
-      if (isDraggingRef.current && e.target === canvas) {
-        // This was a drag on the canvas background, prevent tile clicks
-        e.stopPropagation();
-      }
-      isDraggingRef.current = false;
-    };
-    
-    // We add the 'capture' option to ensure our logic runs before R3F's
-    canvas.addEventListener('pointerdown', handleMouseDown, true);
-    canvas.addEventListener('pointermove', handleMouseMove, true);
-    canvas.addEventListener('pointerup', handleMouseUp, true);
-    return () => {
-      canvas.removeEventListener('pointerdown', handleMouseDown, true);
-      canvas.removeEventListener('pointermove', handleMouseMove, true);
-      canvas.removeEventListener('pointerup', handleMouseUp, true);
-    };
-  }, [gl]);
 
-  // Expose the isDraggingRef via a global object for tile clicks to check
-  useEffect(() => {
-    (window as any).isCanvasDragging = isDraggingRef;
-  }, []);
+    const onKeyDown = (e: KeyboardEvent) => { keysRef.current.add(e.key.toLowerCase()); };
+    const onKeyUp = (e: KeyboardEvent) => { keysRef.current.delete(e.key.toLowerCase()); };
+
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      animatingRef.current = false; // user took control
+      zoomRef.current = Math.max(20, Math.min(120, zoomRef.current - e.deltaY * 0.08));
+    };
+
+    const onMouseDown = (e: MouseEvent) => {
+      if (e.button === 0) isDraggingRef.current = 'left';
+      else if (e.button === 2) isDraggingRef.current = 'right';
+      lastMouseRef.current = { x: e.clientX, y: e.clientY };
+      dragDistRef.current = 0;
+    };
+    const onMouseMove = (e: MouseEvent) => {
+      const drag = isDraggingRef.current;
+      if (!drag) return;
+      const dx = e.clientX - lastMouseRef.current.x;
+      const dy = e.clientY - lastMouseRef.current.y;
+      lastMouseRef.current = { x: e.clientX, y: e.clientY };
+      dragDistRef.current += Math.abs(dx) + Math.abs(dy);
+
+      animatingRef.current = false; // user took control
+
+      if (drag === 'left') {
+        angleRef.current -= dx * MOUSE_ROTATE_SPEED;
+      } else {
+        const angle = angleRef.current;
+        const rightX = Math.cos(angle);
+        const rightZ = -Math.sin(angle);
+        const forwardX = -Math.sin(angle);
+        const forwardZ = -Math.cos(angle);
+        const zf = MOUSE_PAN_SPEED / (zoomRef.current * 0.02);
+        targetRef.current.x -= (dx * rightX + dy * forwardX) * zf;
+        targetRef.current.z -= (dx * rightZ + dy * forwardZ) * zf;
+      }
+    };
+    const onMouseUp = () => { isDraggingRef.current = null; };
+    const onContextMenu = (e: MouseEvent) => { e.preventDefault(); };
+
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    canvas.addEventListener('wheel', onWheel, { passive: false });
+    canvas.addEventListener('mousedown', onMouseDown);
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+    canvas.addEventListener('contextmenu', onContextMenu);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+      canvas.removeEventListener('wheel', onWheel);
+      canvas.removeEventListener('mousedown', onMouseDown);
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+      canvas.removeEventListener('contextmenu', onContextMenu);
+    };
+  }, [camera, gl]);
+
+  useFrame((_, delta) => {
+    const keys = keysRef.current;
+
+    // WASD/QE interrupts animation
+    if (keys.size > 0) animatingRef.current = false;
+
+    // Keyboard controls
+    const angle = angleRef.current;
+    const fX = -Math.sin(angle), fZ = -Math.cos(angle);
+    const rX = Math.cos(angle), rZ = -Math.sin(angle);
+    if (keys.has('w')) { targetRef.current.x += fX * PAN_SPEED; targetRef.current.z += fZ * PAN_SPEED; }
+    if (keys.has('s')) { targetRef.current.x -= fX * PAN_SPEED; targetRef.current.z -= fZ * PAN_SPEED; }
+    if (keys.has('a')) { targetRef.current.x -= rX * PAN_SPEED; targetRef.current.z -= rZ * PAN_SPEED; }
+    if (keys.has('d')) { targetRef.current.x += rX * PAN_SPEED; targetRef.current.z += rZ * PAN_SPEED; }
+    if (keys.has('q')) angleRef.current -= ROTATE_SPEED;
+    if (keys.has('e')) angleRef.current += ROTATE_SPEED;
+
+    // Snap animation (smooth lerp toward target config)
+    if (animatingRef.current && animTargetRef.current) {
+      animProgressRef.current = Math.min(1, animProgressRef.current + delta * 2.5);
+      const t = smoothstep(animProgressRef.current);
+
+      targetRef.current.lerp(animTargetRef.current.target, t * 0.15);
+      angleRef.current = THREE.MathUtils.lerp(angleRef.current, animTargetRef.current.angle, t * 0.15);
+      zoomRef.current = THREE.MathUtils.lerp(zoomRef.current, animTargetRef.current.zoom, t * 0.15);
+
+      if (animProgressRef.current >= 1) animatingRef.current = false;
+    }
+
+    // Apply to camera
+    const ortho = camera as THREE.OrthographicCamera;
+    const dist = distanceRef.current;
+    camera.position.set(
+      targetRef.current.x + Math.sin(angleRef.current) * dist,
+      ELEVATION,
+      targetRef.current.z + Math.cos(angleRef.current) * dist
+    );
+    camera.lookAt(targetRef.current);
+    ortho.zoom = zoomRef.current;
+    ortho.updateProjectionMatrix();
+  });
 
   return null;
 }
 
-function GameScene() {
-  const store = useGameStore();
-  const { gameState, selectedHero, hoveredTile, currentPath, activePlayerId } = store;
+function smoothstep(t: number) {
+  return t * t * (3 - 2 * t);
+}
 
-  const allHeroes = useMemo(() => 
-    Object.values(gameState?.players || {}).flatMap(p => p.heroes),
-    [gameState?.players]
+function GameScene() {
+  const gameState = useGameStore(s => s.gameState);
+  const selectedHero = useGameStore(s => s.selectedHero);
+  const hoveredTile = useGameStore(s => s.hoveredTile);
+  const currentPath = useGameStore(s => s.currentPath);
+  const activePlayerId = useGameStore(s => s.activePlayerId);
+  const selectHero = useGameStore(s => s.selectHero);
+  const setHoveredTile = useGameStore(s => s.setHoveredTile);
+  const clearHover = useGameStore(s => s.clearHover);
+  const moveHero = useGameStore(s => s.moveHero);
+  const attackHero = useGameStore(s => s.attackHero);
+
+  const allHeroes = useMemo(() =>
+    gameState ? Object.values(gameState.players).flatMap(p => [...p.heroes]) : [],
+    [gameState]
   );
   const selectedHeroData = allHeroes.find(h => h.id === selectedHero);
+
+  const pathSet = useMemo(() => {
+    if (!currentPath) return new Set<string>();
+    return new Set(currentPath.map(p => `${p.q},${p.r}`));
+  }, [currentPath]);
 
   const heroPositions = useMemo(() => {
     const map = new Map<string, { heroId: string; color: string; owner: string }>();
@@ -105,31 +203,29 @@ function GameScene() {
   if (!gameState) return null;
 
   const { grid, mapWidth, mapHeight } = gameState;
-  const centerX = mapWidth / 2;
-  const centerZ = mapHeight / 2;
 
   return (
     <>
-      <OrthographicCamera makeDefault zoom={40} position={[centerX, 20, centerZ + 20]} />
+      <OrthographicCamera makeDefault zoom={60} position={[10, 15, 30]} />
       <CameraController />
-      
-      <ambientLight intensity={0.2} color="#334455" />
+
+      {/* Lighting — noir */}
+      <ambientLight intensity={0.25} color="#334455" />
       <directionalLight position={[15, 25, 10]} intensity={0.7} color="#99aacc" />
       <directionalLight position={[-10, 15, -10]} intensity={0.25} color="#223344" />
-      
-      <fog attach="fog" args={['#060810', 30, 60]} />
-      
+
+      <fog attach="fog" args={['#060810', 35, 70]} />
+
+      {/* Grid */}
       {grid.map((row, r) =>
         row.map((tile, q) => {
           const tileKey = `${q},${r}`;
           const heroOnTile = heroPositions.get(tileKey);
-          
+
           let isAttackable = false;
-          if (selectedHeroData && heroOnTile && heroOnTile.owner !== activePlayerId) {
+          if (selectedHeroData && heroOnTile && heroOnTile.owner !== activePlayerId && !selectedHeroData.hasAttacked) {
             const dist = octileDistance(selectedHeroData.position.q, selectedHeroData.position.r, q, r);
-            if (dist <= selectedHeroData.stats.rng && !selectedHeroData.hasAttacked) {
-              isAttackable = true;
-            }
+            if (dist <= selectedHeroData.stats.rng) isAttackable = true;
           }
 
           return (
@@ -137,24 +233,25 @@ function GameScene() {
               key={tileKey}
               tile={tile}
               isHighlighted={hoveredTile?.q === q && hoveredTile?.r === r}
-              isPath={currentPath?.some(p => p.q === q && p.r === r) || false}
+              isPath={pathSet.has(tileKey)}
               isSelected={heroOnTile?.heroId === selectedHero}
               hasHero={!!heroOnTile && tile.visible === 'visible'}
               heroColor={heroOnTile?.color}
               isEnemy={!!heroOnTile && heroOnTile.owner !== activePlayerId}
               isAttackable={isAttackable}
               onClick={() => {
-                if ((window as any).isCanvasDragging?.current) return; // Don't click after a drag
-                if (isAttackable) {
-                  store.attackHero(selectedHero!, heroOnTile!.heroId);
+                // Suppress clicks if user was dragging
+                if (((window as any).__cameraDragDist?.current ?? 0) > 8) return;
+                if (isAttackable && selectedHero) {
+                  attackHero(selectedHero, heroOnTile!.heroId);
                 } else if (heroOnTile && heroOnTile.owner === activePlayerId) {
-                  store.selectHero(heroOnTile.heroId);
+                  selectHero(heroOnTile.heroId);
                 } else if (selectedHero) {
-                  store.moveHero(selectedHero, q, r);
+                  moveHero(selectedHero, q, r);
                 }
               }}
-              onPointerEnter={() => store.setHoveredTile(q, r)}
-              onPointerLeave={store.clearHover}
+              onPointerEnter={() => setHoveredTile(q, r)}
+              onPointerLeave={clearHover}
             />
           );
         })
