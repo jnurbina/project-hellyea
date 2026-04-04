@@ -180,8 +180,8 @@ function ActionToolbar({ heroId }: { heroId: string }) {
   const hasQueuedGather = !!queued?.gatherTile;
 
   // Check if hero is on a resource tile with resources
-  const tile = gameState.grid[hero.position.r][hero.position.q];
-  const canGather = tile.resourceType && (tile.resourceAmount || 0) > 0;
+  const tile = gameState ? gameState.grid[hero.position.r]?.[hero.position.q] : null;
+  const canGather = !!(tile?.resourceType && (tile.resourceAmount ?? 0) > 0);
 
   return (
     <group position={[hero.position.q + 0.55, 0.5, hero.position.r]}>

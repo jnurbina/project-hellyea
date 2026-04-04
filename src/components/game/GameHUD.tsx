@@ -194,8 +194,8 @@ function HeroInfoPanel({
 
   // Check if hero is on a resource tile with resources
   const gameState = useGameStore(s => s.gameState);
-  const tile = gameState?.grid[hero.position.r][hero.position.q];
-  const canGather = tile?.resourceType && (tile.resourceAmount || 0) > 0;
+  const tile = gameState ? gameState.grid[hero.position.r]?.[hero.position.q] : null;
+  const canGather = !!(tile?.resourceType && (tile.resourceAmount ?? 0) > 0);
 
   return (
     <div className="bg-black/85 border rounded-lg px-4 py-3 min-w-[240px] max-w-[270px]" style={{ borderColor: color + '66' }}>
