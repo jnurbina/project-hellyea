@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo } from 'react';
-import { useGameStore, ActionMode, QueuedAction } from '@/lib/game-store';
+import { useGameStore, QueuedAction } from '@/lib/game-store';
 import { Hero } from '@/lib/types';
 
 export default function GameHUD() {
@@ -25,7 +25,6 @@ export default function GameHUD() {
   const cancelEndTurn = useGameStore(s => s.cancelEndTurn);
   const focusHero = useGameStore(s => s.focusHero);
 
-  // Keyboard: SPACE = end turn, ESC = cancel/deselect
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       if (phase !== 'planning') return;
@@ -62,11 +61,11 @@ export default function GameHUD() {
         <div className="pointer-events-auto bg-black/80 border border-cyan-900/50 rounded px-3 py-2 text-xs shrink-0">
           <div className="text-cyan-400 font-bold">ROUND {round}</div>
           <div className="text-gray-500 text-[10px]">
-            {phase === 'planning' ? `${activePlayer.name} — PLANNING` : 'RESOLUTION'}
+            {phase === 'planning' ? `${activePlayer.name} — PLANNING` : '⚔ RESOLUTION'}
           </div>
         </div>
 
-        {/* Hero roster for current player */}
+        {/* Hero roster */}
         {phase === 'planning' && (
           <div className="pointer-events-auto bg-black/80 border border-gray-700 rounded px-3 py-2 flex gap-1.5">
             {activePlayer.heroes.map(hero => {
@@ -92,7 +91,7 @@ export default function GameHUD() {
           </div>
         )}
 
-        {/* Resolution progress */}
+        {/* Resolution tracker */}
         {phase === 'resolution' && (
           <div className="bg-black/80 border border-yellow-900/50 rounded px-3 py-2 flex gap-1.5">
             {resolutionOrder.map((heroId, idx) => {
@@ -100,12 +99,13 @@ export default function GameHUD() {
               if (!hero) return null;
               const isCurrent = idx === resolutionIndex;
               const isDone = idx < resolutionIndex;
+              const color = hero.owner === 'player1' ? '#00ccff' : '#ff4444';
               return (
-                <div key={heroId} className={`px-2 py-1 rounded text-[10px] font-bold uppercase whitespace-nowrap ${
-                  isCurrent ? 'bg-yellow-900/50 border border-yellow-400 text-yellow-300 animate-pulse'
-                  : isDone ? 'bg-gray-800/50 text-gray-600 line-through' : 'bg-gray-800/30 text-gray-500'
+                <div key={heroId} className={`px-2 py-1 rounded text-[10px] font-bold uppercase whitespace-nowrap border ${
+                  isCurrent ? 'border-yellow-400 bg-yellow-900/40 text-yellow-300 animate-pulse'
+                  : isDone ? 'bg-gray-800/50 text-gray-600 line-through border-transparent' : 'bg-gray-800/30 text-gray-500 border-transparent'
                 }`}>
-                  {hero.name} ({hero.stats.spd})
+                  <span style={{ color: isCurrent ? undefined : isDone ? undefined : color }}>{hero.name}</span> ({hero.stats.spd})
                 </div>
               );
             })}
@@ -120,20 +120,15 @@ export default function GameHUD() {
         </div>
       </div>
 
-      {/* ── Bottom Left: Active hero panel ── */}
-      {phase === 'planning' && selectedHero && selectedHero.owner === planningPlayerId && (
+      {/* ── Bottom Left: Selected hero panel ── */}
+      {selectedHero && (
         <div className="absolute bottom-4 left-4 pointer-events-auto">
-          <HeroActionPanel
-            hero={selectedHero}
-            queued={queuedActions[selectedHero.id]}
-            actionMode={actionMode}
-            setActionMode={setActionMode}
-          />
+          <HeroInfoPanel hero={selectedHero} queued={queuedActions[selectedHero.id]} isPlanning={phase === 'planning' && selectedHero.owner === planningPlayerId} />
         </div>
       )}
 
-      {/* ── Bottom Right: Target panel ── */}
-      {targetHero && selectedHero && (actionMode === 'attack' || phase === 'resolution') && (
+      {/* ── Bottom Right: Target panel (during attack) ── */}
+      {targetHero && selectedHero && (
         <div className="absolute bottom-4 right-4 pointer-events-auto">
           <TargetPanel hero={targetHero} attacker={selectedHero} isPending={!!pendingTarget} />
         </div>
@@ -151,7 +146,7 @@ export default function GameHUD() {
         </div>
       )}
 
-      {/* ── Resolution overlay ── */}
+      {/* Resolution overlay */}
       {phase === 'resolution' && (
         <div className="absolute bottom-4 left-1/2 -translate-x-1/2">
           <div className="bg-yellow-900/30 border border-yellow-500/30 rounded px-6 py-2 text-yellow-400 text-sm font-bold uppercase tracking-wider animate-pulse">
@@ -160,7 +155,7 @@ export default function GameHUD() {
         </div>
       )}
 
-      {/* ── Action mode indicator ── */}
+      {/* Action mode indicator */}
       {actionMode !== 'idle' && phase === 'planning' && (
         <div className="absolute top-14 left-1/2 -translate-x-1/2">
           <div className={`px-4 py-1.5 rounded text-xs font-bold uppercase tracking-wider ${
@@ -172,16 +167,16 @@ export default function GameHUD() {
         </div>
       )}
 
-      {/* ── End Turn Confirmation Modal ── */}
+      {/* End Turn Confirmation */}
       {showEndTurnConfirm && (
         <div className="absolute inset-0 flex items-center justify-center bg-black/50 pointer-events-auto">
           <div className="bg-black/90 border border-cyan-500/50 rounded-lg px-8 py-6 text-center shadow-[0_0_30px_rgba(0,255,255,0.15)]">
             <div className="text-cyan-400 text-lg font-bold mb-2">END PLANNING?</div>
             <div className="text-gray-400 text-xs mb-1">
-              {planningPlayerId === 'player1' ? 'Player 2 will plan next.' : 'All actions will resolve by speed order.'}
+              {planningPlayerId === 'player1' ? 'Player 2 will plan next.' : 'All actions resolve by speed.'}
             </div>
             <div className="text-gray-500 text-[10px] mb-4">
-              {Object.keys(queuedActions).length} action(s) queued
+              {Object.keys(queuedActions).filter(id => allHeroes.find(h => h.id === id)?.owner === planningPlayerId).length} hero action(s) queued
             </div>
             <div className="flex gap-4 justify-center">
               <button onClick={confirmEndTurn} className="bg-cyan-900/50 hover:bg-cyan-700/50 border border-cyan-500 rounded px-6 py-2 text-cyan-400 text-sm uppercase tracking-wider">Confirm [SPACE]</button>
@@ -194,17 +189,13 @@ export default function GameHUD() {
   );
 }
 
-// === Hero Action Panel (Bottom Left) ===
+// === Hero Info Panel (Bottom Left) ===
 
-function HeroActionPanel({ hero, queued, actionMode, setActionMode }: {
-  hero: Hero; queued?: QueuedAction; actionMode: ActionMode; setActionMode: (m: ActionMode) => void;
-}) {
+function HeroInfoPanel({ hero, queued, isPlanning }: { hero: Hero; queued?: QueuedAction; isPlanning: boolean }) {
   const color = hero.owner === 'player1' ? '#00ccff' : '#ff4444';
-  const hasQueuedMove = !!queued?.moveDest;
-  const hasQueuedAttack = !!queued?.attackTargetId;
 
   return (
-    <div className="bg-black/85 border rounded-lg px-4 py-3 min-w-[260px] max-w-[280px]" style={{ borderColor: color + '66' }}>
+    <div className="bg-black/85 border rounded-lg px-4 py-3 min-w-[240px] max-w-[270px]" style={{ borderColor: color + '66' }}>
       <div className="flex justify-between items-center mb-2">
         <div>
           <div className="font-bold uppercase" style={{ color }}>{hero.name}</div>
@@ -213,21 +204,20 @@ function HeroActionPanel({ hero, queued, actionMode, setActionMode }: {
         <div className="text-[10px] text-gray-500 uppercase">{hero.archetype}</div>
       </div>
 
-      {/* HP */}
       <div className="mb-3">
         <div className="flex justify-between text-[10px] mb-0.5">
           <span className="text-gray-500">HP</span>
           <span className="text-white">{hero.stats.hp}/{hero.stats.maxHp}</span>
         </div>
         <div className="w-full h-1.5 bg-gray-800 rounded-full overflow-hidden">
-          <div className="h-full rounded-full transition-all duration-300" style={{
+          <div className="h-full rounded-full transition-all duration-500" style={{
             width: `${(hero.stats.hp / hero.stats.maxHp) * 100}%`,
             backgroundColor: hero.stats.hp > hero.stats.maxHp * 0.5 ? '#00ccaa' : hero.stats.hp > hero.stats.maxHp * 0.25 ? '#ccaa00' : '#cc3333',
           }} />
         </div>
       </div>
 
-      <div className="flex gap-3 text-[10px] mb-3">
+      <div className="flex gap-3 text-[10px] mb-2">
         <Stat label="ATK" value={hero.stats.atk} />
         <Stat label="DEF" value={hero.stats.def} />
         <Stat label="MOV" value={hero.stats.mov} />
@@ -235,31 +225,17 @@ function HeroActionPanel({ hero, queued, actionMode, setActionMode }: {
         <Stat label="SPD" value={hero.stats.spd} />
       </div>
 
-      {/* Action buttons — click only, no keybinds */}
-      <div className="flex gap-2">
-        <button
-          disabled={hasQueuedMove}
-          onClick={() => setActionMode(actionMode === 'move' ? 'idle' : 'move')}
-          className={`flex-1 py-1.5 rounded text-xs font-bold uppercase tracking-wider transition-all ${
-            actionMode === 'move' ? 'bg-green-700 text-white border border-green-400'
-            : hasQueuedMove ? 'bg-green-900/30 text-green-600 border border-green-800 cursor-not-allowed'
-            : 'bg-green-900/40 text-green-400 border border-green-700 hover:bg-green-800/50'
-          }`}
-        >
-          {hasQueuedMove ? '✓ Move Queued' : '⬡ Move'}
-        </button>
-        <button
-          disabled={hasQueuedAttack}
-          onClick={() => setActionMode(actionMode === 'attack' ? 'idle' : 'attack')}
-          className={`flex-1 py-1.5 rounded text-xs font-bold uppercase tracking-wider transition-all ${
-            actionMode === 'attack' ? 'bg-red-700 text-white border border-red-400'
-            : hasQueuedAttack ? 'bg-red-900/30 text-red-600 border border-red-800 cursor-not-allowed'
-            : 'bg-red-900/40 text-red-400 border border-red-700 hover:bg-red-800/50'
-          }`}
-        >
-          {hasQueuedAttack ? '✓ Attack Queued' : '⚔ Attack'}
-        </button>
-      </div>
+      {/* Queued actions display */}
+      {isPlanning && queued && (
+        <div className="border-t border-gray-800 pt-2 mt-1 text-[10px]">
+          {queued.moveDest && <div className="text-green-400">⬡ Move queued → ({queued.moveDest.q}, {queued.moveDest.r})</div>}
+          {queued.attackTargetId && <div className="text-red-400">⚔ Attack queued</div>}
+        </div>
+      )}
+
+      {isPlanning && !queued && (
+        <div className="text-[10px] text-gray-600 italic">Click hero to show actions</div>
+      )}
     </div>
   );
 }
@@ -281,7 +257,7 @@ function TargetPanel({ hero, attacker, isPending }: { hero: Hero; attacker: Hero
         </div>
         <div className="w-full h-1.5 bg-gray-800 rounded-full overflow-hidden relative">
           <div className="h-full rounded-full absolute top-0 left-0" style={{ width: `${(hero.stats.hp / hero.stats.maxHp) * 100}%`, backgroundColor: '#cc3333' }} />
-          <div className="h-full rounded-full absolute top-0 left-0 transition-all" style={{
+          <div className="h-full rounded-full absolute top-0 left-0 transition-all duration-500" style={{
             width: `${(hpAfter / hero.stats.maxHp) * 100}%`,
             backgroundColor: hpAfter > hero.stats.maxHp * 0.5 ? '#00ccaa' : hpAfter > hero.stats.maxHp * 0.25 ? '#ccaa00' : '#cc3333',
           }} />
@@ -289,6 +265,7 @@ function TargetPanel({ hero, attacker, isPending }: { hero: Hero; attacker: Hero
       </div>
 
       <div className="flex gap-3 text-[10px] mb-2">
+        <Stat label="ATK" value={hero.stats.atk} />
         <Stat label="DEF" value={hero.stats.def} />
         <Stat label="SPD" value={hero.stats.spd} />
       </div>

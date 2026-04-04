@@ -8,7 +8,7 @@ import { Tile, TERRAIN_CONFIG } from '@/lib/types';
 
 const TILE_SIZE = 0.46;
 const TILE_DEPTH = 0.08;
-const WALL_COLOR = '#2e3035';
+const WALL_COLOR = '#2a2050'; // blue-purple cliff walls
 
 const octGeo = createOctagonGeometry(TILE_SIZE, TILE_DEPTH);
 const octEdgePoints = getOctagonEdgePoints(TILE_SIZE);

@@ -2,14 +2,12 @@
 
 import { useMemo, useRef, useEffect, useState } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { OrthographicCamera } from '@react-three/drei';
+import { OrthographicCamera, Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { useGameStore, CameraConfig, MoveAnimation } from '@/lib/game-store';
-import { octileDistance } from '@/lib/grid';
 import OctileTileMesh from './OctileTile';
 
 // === Camera Controller ===
-// During resolution: only zoom + rotate allowed (no WASD pan, no right-drag pan)
 
 function CameraController() {
   const { camera, gl } = useThree();
@@ -22,7 +20,6 @@ function CameraController() {
   const distanceRef = useRef(12);
   const animatingRef = useRef(false);
   const animTargetRef = useRef<CameraConfig | null>(null);
-  const animProgressRef = useRef(0);
   const keysRef = useRef<Set<string>>(new Set());
   const isDraggingRef = useRef<'left' | 'right' | null>(null);
   const lastMouseRef = useRef({ x: 0, y: 0 });
@@ -30,10 +27,10 @@ function CameraController() {
 
   const ELEVATION = 12;
 
+  // When store pushes a new cameraConfig, snap to it
   useEffect(() => {
     if (!cameraConfig) return;
-    animTargetRef.current = cameraConfig;
-    animProgressRef.current = 0;
+    animTargetRef.current = { ...cameraConfig, target: cameraConfig.target.clone() };
     animatingRef.current = true;
   }, [cameraConfig]);
 
@@ -48,7 +45,6 @@ function CameraController() {
     const onKeyUp = (e: KeyboardEvent) => keysRef.current.delete(e.key.toLowerCase());
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
-      animatingRef.current = false;
       zoomRef.current = Math.max(30, Math.min(200, zoomRef.current - e.deltaY * 0.15));
     };
     const onMouseDown = (e: MouseEvent) => {
@@ -64,15 +60,15 @@ function CameraController() {
       const dy = e.clientY - lastMouseRef.current.y;
       lastMouseRef.current = { x: e.clientX, y: e.clientY };
       dragDistRef.current += Math.abs(dx) + Math.abs(dy);
-      animatingRef.current = false;
-
-      const locked = useGameStore.getState().resolutionLocked;
+      
+      // Any drag interrupts animation
+      if (drag === 'left' || !useGameStore.getState().resolutionLocked) {
+        animatingRef.current = false;
+      }
 
       if (drag === 'left') {
-        // Rotate always allowed
         angleRef.current -= dx * 0.008;
-      } else if (!locked) {
-        // Pan only during planning
+      } else if (!useGameStore.getState().resolutionLocked) {
         const a = angleRef.current;
         const zf = 0.04 / (zoomRef.current * 0.015);
         targetRef.current.x -= (dx * Math.cos(a) + dy * -Math.sin(a)) * zf;
@@ -104,7 +100,8 @@ function CameraController() {
     const keys = keysRef.current;
     const locked = useGameStore.getState().resolutionLocked;
 
-    if (keys.size > 0) animatingRef.current = false;
+    // Keyboard interrupts animation (only if unlocked)
+    if (!locked && keys.size > 0) animatingRef.current = false;
 
     // WASD pan only during planning
     if (!locked) {
@@ -115,17 +112,29 @@ function CameraController() {
       if (keys.has('a')) { targetRef.current.x -= Math.cos(a) * spd; targetRef.current.z -= -Math.sin(a) * spd; }
       if (keys.has('d')) { targetRef.current.x += Math.cos(a) * spd; targetRef.current.z += -Math.sin(a) * spd; }
     }
-    // QE rotate always allowed
     if (keys.has('q')) angleRef.current -= 0.02;
     if (keys.has('e')) angleRef.current += 0.02;
 
+    // Smooth camera animation — actually reaches the target
     if (animatingRef.current && animTargetRef.current) {
-      animProgressRef.current = Math.min(1, animProgressRef.current + delta * 2.5);
-      const t = animProgressRef.current * animProgressRef.current * (3 - 2 * animProgressRef.current) * 0.15;
+      const lerpSpeed = 4 * delta; // ~4x per second, frame-rate independent
+      const t = Math.min(lerpSpeed, 1);
+
       targetRef.current.lerp(animTargetRef.current.target, t);
       angleRef.current = THREE.MathUtils.lerp(angleRef.current, animTargetRef.current.angle, t);
       zoomRef.current = THREE.MathUtils.lerp(zoomRef.current, animTargetRef.current.zoom, t);
-      if (animProgressRef.current >= 1) animatingRef.current = false;
+
+      // Stop when close enough
+      const distToTarget = targetRef.current.distanceTo(animTargetRef.current.target);
+      if (distToTarget < 0.05 && Math.abs(zoomRef.current - animTargetRef.current.zoom) < 0.5) {
+        targetRef.current.copy(animTargetRef.current.target);
+        zoomRef.current = animTargetRef.current.zoom;
+        angleRef.current = animTargetRef.current.angle;
+        animatingRef.current = false;
+        
+        // Signal that camera arrived (for resolution pacing)
+        useGameStore.getState().onCameraArrived?.();
+      }
     }
 
     const ortho = camera as THREE.OrthographicCamera;
@@ -140,6 +149,84 @@ function CameraController() {
   });
 
   return null;
+}
+
+// === Action Bubbles (3D, around selected hero) ===
+
+function ActionBubbles({ heroId }: { heroId: string }) {
+  const gameState = useGameStore(s => s.gameState);
+  const queuedActions = useGameStore(s => s.queuedActions);
+  const setActionMode = useGameStore(s => s.setActionMode);
+  const selectHero = useGameStore(s => s.selectHero);
+  const groupRef = useRef<THREE.Group>(null);
+  const [visible, setVisible] = useState(false);
+
+  const hero = useMemo(() => {
+    if (!gameState) return null;
+    return Object.values(gameState.players).flatMap(p => p.heroes).find(h => h.id === heroId);
+  }, [gameState, heroId]);
+
+  // Animate in
+  useEffect(() => {
+    const timer = setTimeout(() => setVisible(true), 50);
+    return () => clearTimeout(timer);
+  }, []);
+
+  useFrame((_, delta) => {
+    if (groupRef.current) {
+      groupRef.current.rotation.y += delta * 0.3;
+    }
+  });
+
+  if (!hero) return null;
+  
+  const queued = queuedActions[heroId];
+  const hasQueuedMove = !!queued?.moveDest;
+  const hasQueuedAttack = !!queued?.attackTargetId;
+
+  return (
+    <group position={[hero.position.q, 0.6, hero.position.r]} ref={groupRef}>
+      {/* Move bubble — above */}
+      {!hasQueuedMove && (
+        <group position={[0, visible ? 0.9 : 0.5, 0]} scale={visible ? 1 : 0}>
+          <mesh
+            onClick={(e) => { e.stopPropagation(); setActionMode('move'); }}
+          >
+            <sphereGeometry args={[0.15, 16, 12]} />
+            <meshStandardMaterial color="#22cc66" emissive="#22cc66" emissiveIntensity={0.6} transparent opacity={0.9} />
+          </mesh>
+          <Html center distanceFactor={8} style={{ pointerEvents: 'none' }}>
+            <div className="text-[10px] text-green-300 font-bold whitespace-nowrap select-none" style={{ textShadow: '0 0 4px black' }}>⬡</div>
+          </Html>
+        </group>
+      )}
+      
+      {/* Attack bubble — left */}
+      {!hasQueuedAttack && (
+        <group position={[visible ? -0.5 : -0.2, 0.5, 0]} scale={visible ? 1 : 0}>
+          <mesh
+            onClick={(e) => { e.stopPropagation(); setActionMode('attack'); }}
+          >
+            <sphereGeometry args={[0.15, 16, 12]} />
+            <meshStandardMaterial color="#cc3333" emissive="#cc3333" emissiveIntensity={0.6} transparent opacity={0.9} />
+          </mesh>
+          <Html center distanceFactor={8} style={{ pointerEvents: 'none' }}>
+            <div className="text-[10px] text-red-300 font-bold whitespace-nowrap select-none" style={{ textShadow: '0 0 4px black' }}>⚔</div>
+          </Html>
+        </group>
+      )}
+
+      {/* Deselect ring (click background to deselect) */}
+      <mesh
+        position={[0, 0.01, 0]}
+        rotation={[-Math.PI / 2, 0, 0]}
+        onClick={(e) => { e.stopPropagation(); selectHero(null); }}
+      >
+        <ringGeometry args={[0.6, 1.5, 32]} />
+        <meshBasicMaterial color="#000000" transparent opacity={0} />
+      </mesh>
+    </group>
+  );
 }
 
 // === Animated Hero ===
@@ -162,10 +249,11 @@ function AnimatedHero({ animation }: { animation: MoveAnimation }) {
     const from = anim.path[anim.currentIndex];
     const to = anim.path[Math.min(anim.currentIndex + 1, anim.path.length - 1)];
     const t = anim.progress;
-    const x = from.q + (to.q - from.q) * t;
-    const z = from.r + (to.r - from.r) * t;
-    const bounce = Math.sin(t * Math.PI) * 0.12;
-    meshRef.current.position.set(x, bounce + 0.15, z);
+    meshRef.current.position.set(
+      from.q + (to.q - from.q) * t,
+      Math.sin(t * Math.PI) * 0.12 + 0.15,
+      from.r + (to.r - from.r) * t
+    );
     tickMoveAnimation(delta);
   });
 
@@ -197,6 +285,7 @@ function GameScene() {
   const moveAnimation = useGameStore(s => s.moveAnimation);
   const planningPlayerId = useGameStore(s => s.planningPlayerId);
   const queuedActions = useGameStore(s => s.queuedActions);
+  const phase = useGameStore(s => s.phase);
   const handleTileClick = useGameStore(s => s.handleTileClick);
   const setHoveredTile = useGameStore(s => s.setHoveredTile);
   const clearHover = useGameStore(s => s.clearHover);
@@ -211,19 +300,13 @@ function GameScene() {
     return new Set(currentPath.map(p => `${p.q},${p.r}`));
   }, [currentPath]);
 
-  // Show queued move indicators
   const queuedMoveIndicators = useMemo(() => {
-    const indicators: { q: number; r: number; color: string }[] = [];
+    const indicators: { q: number; r: number }[] = [];
     for (const [heroId, action] of Object.entries(queuedActions)) {
-      if (action.moveDest) {
-        const hero = allHeroes.find(h => h.id === heroId);
-        if (hero) {
-          indicators.push({ q: action.moveDest.q, r: action.moveDest.r, color: hero.owner === 'player1' ? '#00ccff' : '#ff4444' });
-        }
-      }
+      if (action.moveDest) indicators.push(action.moveDest);
     }
-    return indicators;
-  }, [queuedActions, allHeroes]);
+    return new Set(indicators.map(i => `${i.q},${i.r}`));
+  }, [queuedActions]);
 
   const heroPositions = useMemo(() => {
     const map = new Map<string, { heroId: string; color: string; owner: string }>();
@@ -238,7 +321,6 @@ function GameScene() {
   }, [allHeroes, moveAnimation]);
 
   if (!gameState) return null;
-
   const { grid, mapWidth, mapHeight } = gameState;
 
   return (
@@ -246,19 +328,17 @@ function GameScene() {
       <OrthographicCamera makeDefault zoom={120} position={[10, 12, 25]} />
       <CameraController />
 
-      {/* Lighting — bright enough to see everything */}
+      {/* Lighting */}
       <ambientLight intensity={0.6} color="#778899" />
       <directionalLight position={[20, 30, 15]} intensity={1.2} color="#bbccdd" />
       <directionalLight position={[-15, 20, -10]} intensity={0.5} color="#667788" />
       <hemisphereLight color="#667788" groundColor="#333344" intensity={0.4} />
 
-      {/* LARGE ground plane — gun-metal grey, well below tiles */}
+      {/* Ground planes */}
       <mesh position={[mapWidth / 2 - 0.5, -0.5, mapHeight / 2 - 0.5]} rotation={[-Math.PI / 2, 0, 0]}>
         <planeGeometry args={[mapWidth * 3, mapHeight * 3]} />
         <meshStandardMaterial color="#32353a" roughness={0.75} metalness={0.25} />
       </mesh>
-
-      {/* Secondary ground closer to tiles to fill gaps */}
       <mesh position={[mapWidth / 2 - 0.5, -0.08, mapHeight / 2 - 0.5]} rotation={[-Math.PI / 2, 0, 0]}>
         <planeGeometry args={[mapWidth + 2, mapHeight + 2]} />
         <meshStandardMaterial color="#282a2e" roughness={0.8} metalness={0.2} />
@@ -273,7 +353,7 @@ function GameScene() {
           const isAttackRange = attackTiles.has(tileKey);
           const isPending = pendingTarget?.q === q && pendingTarget?.r === r;
           const isActiveHero = heroOnTile?.heroId === selectedHeroId;
-          const hasQueuedMove = queuedMoveIndicators.some(i => i.q === q && i.r === r);
+          const hasQueuedMove = queuedMoveIndicators.has(tileKey);
 
           return (
             <OctileTileMesh
@@ -300,6 +380,11 @@ function GameScene() {
         })
       )}
 
+      {/* Action bubbles for selected hero */}
+      {phase === 'planning' && selectedHeroId && actionMode === 'idle' && (
+        <ActionBubbles heroId={selectedHeroId} />
+      )}
+
       {moveAnimation && <AnimatedHero animation={moveAnimation} />}
     </>
   );
@@ -308,17 +393,15 @@ function GameScene() {
 // === Debug ===
 
 function DebugOverlay() {
-  const [stats, setStats] = useState({ x: 0, z: 0, angle: 0, zoom: 0, dist: 0 });
+  const [stats, setStats] = useState({ x: 0, z: 0, angle: 0, zoom: 0 });
   useEffect(() => {
     const iv = setInterval(() => {
       const d = (window as any).__cameraDebug;
       if (!d) return;
-      setStats({ x: d.targetRef.current.x, z: d.targetRef.current.z, angle: (d.angleRef.current * 180 / Math.PI) % 360, zoom: d.zoomRef.current, dist: d.distanceRef.current });
+      setStats({ x: d.targetRef.current.x, z: d.targetRef.current.z, angle: (d.angleRef.current * 180 / Math.PI) % 360, zoom: d.zoomRef.current });
     }, 200);
     return () => clearInterval(iv);
   }, []);
-
-  const gs = useGameStore(s => s.gameState);
   const phase = useGameStore(s => s.phase);
   const round = useGameStore(s => s.round);
   const planningPlayerId = useGameStore(s => s.planningPlayerId);
@@ -333,9 +416,8 @@ function DebugOverlay() {
         <div>cam: ({stats.x.toFixed(1)}, {stats.z.toFixed(1)}) ∠{stats.angle.toFixed(0)}° z{stats.zoom.toFixed(0)}</div>
         <div className="border-t border-gray-800 mt-1 pt-1">round: {round} | phase: {phase}</div>
         <div>planning: {planningPlayerId}</div>
-        <div>queued: {Object.keys(queuedActions).length} actions</div>
+        <div>queued: {Object.keys(queuedActions).length}</div>
         {phase === 'resolution' && <div>resolving: {resolutionIndex}/{resolutionOrder.length}</div>}
-        {gs && <div>alive: {Object.values(gs.players).flatMap(p => p.heroes).filter(h => h.alive).length}/4</div>}
       </div>
     </div>
   );

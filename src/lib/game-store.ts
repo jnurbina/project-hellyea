@@ -165,6 +165,7 @@ interface GameStore {
   // Camera & animation
   cameraConfig: CameraConfig | null;
   moveAnimation: MoveAnimation | null;
+  onCameraArrived: (() => void) | null; // callback when camera finishes transition
 
   // Actions
   initGame: (mapWidth?: number, mapHeight?: number) => void;
@@ -212,6 +213,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
   showEndTurnConfirm: false,
   cameraConfig: null,
   moveAnimation: null,
+  onCameraArrived: null,
 
   initGame: (mapWidth = 20, mapHeight = 20) => {
     const grid = generateGrid(mapWidth, mapHeight, Date.now());
@@ -436,8 +438,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     if (!gameState) return;
 
     if (resolutionIndex >= resolutionOrder.length) {
-      // Resolution complete
-      get().startNewRound();
+      setTimeout(() => get().startNewRound(), 800);
       return;
     }
 
@@ -446,69 +447,84 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const action = queuedActions[heroId];
 
     if (!hero || !hero.alive || !action) {
-      // Skip dead/invalid heroes
       set({ resolutionIndex: resolutionIndex + 1 });
-      setTimeout(() => get().processNextResolution(), 200);
+      setTimeout(() => get().processNextResolution(), 300);
       return;
     }
 
-    // First: execute move (if any)
-    if (action.movePath && action.movePath.length > 1) {
-      // Snap camera to hero
-      set({
-        cameraConfig: {
-          target: new THREE.Vector3(hero.position.q, 0, hero.position.r),
-          angle: get().cameraConfig?.angle ?? Math.PI / 4,
-          zoom: 120,
-        },
-        moveAnimation: {
-          heroId: hero.id,
-          path: action.movePath,
-          currentIndex: 0,
-          progress: 0,
-        },
-      });
-      // Animation will call processNextResolutionStep when done
-    } else if (action.attackTargetId) {
-      // No move, just attack
-      get().executeAttack(heroId, action.attackTargetId);
-    } else {
-      // Nothing to do for this hero
-      set({ resolutionIndex: resolutionIndex + 1 });
-      setTimeout(() => get().processNextResolution(), 200);
-    }
+    // Step 1: Pan camera to the hero, WAIT for arrival, then execute
+    set({
+      selectedHeroId: heroId, // show who's acting
+      cameraConfig: {
+        target: new THREE.Vector3(hero.position.q, 0, hero.position.r),
+        angle: get().cameraConfig?.angle ?? Math.PI / 4,
+        zoom: 120,
+      },
+      onCameraArrived: () => {
+        set({ onCameraArrived: null });
+        // Brief pause after camera arrives so player can see who's acting
+        setTimeout(() => {
+          if (action.movePath && action.movePath.length > 1) {
+            set({
+              moveAnimation: {
+                heroId: hero.id,
+                path: action.movePath,
+                currentIndex: 0,
+                progress: 0,
+              },
+            });
+          } else if (action.attackTargetId) {
+            get().executeAttack(heroId, action.attackTargetId);
+          } else {
+            set({ resolutionIndex: resolutionIndex + 1 });
+            setTimeout(() => get().processNextResolution(), 500);
+          }
+        }, 400);
+      },
+    });
   },
 
   executeAttack: (attackerId: string, targetId: string) => {
-    const { gameState, queuedActions, resolutionIndex } = get();
+    const { gameState, resolutionIndex } = get();
     if (!gameState) return;
 
     const gs = cloneGameState(gameState);
     const attacker = findHero(gs, attackerId);
     const target = findHero(gs, targetId);
 
-    if (attacker && target && target.alive) {
-      const damage = Math.max(1, attacker.stats.atk - target.stats.def);
-      target.stats.hp -= damage;
-      if (target.stats.hp <= 0) { target.stats.hp = 0; target.alive = false; }
-
-      // Flash camera to target
-      set({
-        gameState: gs,
-        targetHeroId: targetId,
-        cameraConfig: {
-          target: new THREE.Vector3(target.position.q, 0, target.position.r),
-          angle: get().cameraConfig?.angle ?? Math.PI / 4,
-          zoom: 120,
-        },
-      });
+    if (!attacker || !target || !target.alive) {
+      set({ resolutionIndex: resolutionIndex + 1 });
+      setTimeout(() => get().processNextResolution(), 300);
+      return;
     }
 
-    // Advance to next hero after delay
-    setTimeout(() => {
-      set({ resolutionIndex: resolutionIndex + 1, targetHeroId: null });
-      setTimeout(() => get().processNextResolution(), 300);
-    }, 800);
+    // Show target panel, pan camera to target
+    set({
+      targetHeroId: targetId,
+      selectedHeroId: attackerId, // keep attacker shown
+      cameraConfig: {
+        target: new THREE.Vector3(target.position.q, 0, target.position.r),
+        angle: get().cameraConfig?.angle ?? Math.PI / 4,
+        zoom: 120,
+      },
+      onCameraArrived: () => {
+        set({ onCameraArrived: null });
+        // Apply damage after camera arrives
+        setTimeout(() => {
+          const damage = Math.max(1, attacker.stats.atk - target.stats.def);
+          target.stats.hp -= damage;
+          if (target.stats.hp <= 0) { target.stats.hp = 0; target.alive = false; }
+          attacker.hasAttacked = true;
+          set({ gameState: gs });
+
+          // Hold so player can see the HP change
+          setTimeout(() => {
+            set({ resolutionIndex: resolutionIndex + 1, targetHeroId: null, selectedHeroId: null });
+            setTimeout(() => get().processNextResolution(), 500);
+          }, 1000);
+        }, 300);
+      },
+    });
   },
 
   startNewRound: () => {
