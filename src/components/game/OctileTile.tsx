@@ -2,50 +2,21 @@
 
 import { useMemo, useRef } from 'react';
 import * as THREE from 'three';
-import { ThreeEvent, extend } from '@react-three/fiber';
-import { Line } from '@react-three/drei';
+import { ThreeEvent } from '@react-three/fiber';
+import { Line, Text } from '@react-three/drei';
 import { Tile, TERRAIN_CONFIG } from '@/lib/types';
-
-// Create octagon geometry (flat, lying on XZ plane)
-// Create octagon shape for the tile body
-function createOctagonGeometry(size: number = 0.46): THREE.BufferGeometry {
-  const shape = new THREE.Shape();
-  const sides = 8;
-  const angleOffset = Math.PI / 8;
-  
-  for (let i = 0; i < sides; i++) {
-    const angle = (i / sides) * Math.PI * 2 + angleOffset;
-    const x = Math.cos(angle) * size;
-    const y = Math.sin(angle) * size;
-    if (i === 0) shape.moveTo(x, y);
-    else shape.lineTo(x, y);
-  }
-  shape.closePath();
-  
-  const geo = new THREE.ExtrudeGeometry(shape, {
-    depth: 0.06,
-    bevelEnabled: false,
-  });
-  geo.rotateX(-Math.PI / 2);
-  return geo;
-}
-
-// Edge points for octagon outline
-function getOctagonEdgePoints(size: number = 0.46): [number, number, number][] {
-  const points: [number, number, number][] = [];
-  const sides = 8;
-  const angleOffset = Math.PI / 8;
-  
-  for (let i = 0; i <= sides; i++) {
-    const angle = ((i % sides) / sides) * Math.PI * 2 + angleOffset;
-    points.push([Math.cos(angle) * size, 0.07, Math.sin(angle) * size]);
-  }
-  
-  return points;
-}
 
 const octGeo = createOctagonGeometry();
 const octEdgePoints = getOctagonEdgePoints();
+
+// Simple geometries for resources, cached for performance
+const resourceGeometries = {
+  wood: new THREE.BoxGeometry(0.2, 0.08, 0.08),
+  stone: new THREE.DodecahedronGeometry(0.08, 0),
+  iron: new THREE.OctahedronGeometry(0.08, 0),
+  food: new THREE.SphereGeometry(0.07, 8, 6),
+  water: new THREE.TorusGeometry(0.06, 0.02, 6, 12),
+};
 
 interface OctileTileProps {
   tile: Tile;
@@ -54,61 +25,44 @@ interface OctileTileProps {
   isSelected: boolean;
   hasHero: boolean;
   heroColor?: string;
+  isEnemy: boolean;
+  isAttackable: boolean;
   onClick: () => void;
   onPointerEnter: () => void;
   onPointerLeave: () => void;
 }
 
 export default function OctileTileMesh({
-  tile, isHighlighted, isPath, isSelected, hasHero, heroColor,
+  tile, isHighlighted, isPath, isSelected, hasHero, heroColor, isEnemy, isAttackable,
   onClick, onPointerEnter, onPointerLeave,
 }: OctileTileProps) {
-  const meshRef = useRef<THREE.Mesh>(null);
   
-  const config = TERRAIN_CONFIG[tile.terrain];
-  
-  // Tile fill color — gun-metal grey base, terrain tinted
   const color = useMemo(() => {
     if (tile.visible === 'unexplored') return '#0c0c0e';
-    
-    // Gun-metal grey base with terrain tint
-    const terrainTints: Record<string, string> = {
-      plains:   '#2a2c30',
-      forest:   '#1e2a22',
-      mountain: '#33353a',
-      water:    '#181c2a',
-      ruins:    '#2a2430',
-    };
-    let baseColor = terrainTints[tile.terrain] || '#2a2c30';
-    
-    if (tile.visible === 'explored') {
-      baseColor = darkenColor(baseColor, 0.35);
-    }
-    
+    const baseColor = TERRAIN_CONFIG[tile.terrain].color || '#2a2c30';
+    if (tile.visible === 'explored') return darkenColor(baseColor, 0.35);
+    if (isAttackable) return '#441111';
     if (isSelected) return '#003844';
     if (isPath) return '#002a33';
-    if (isHighlighted) return '#1e2830';
-    
+    if (isHighlighted) return isEnemy ? '#331818' : '#1e2830';
     return baseColor;
-  }, [tile.visible, tile.terrain, isHighlighted, isPath, isSelected]);
+  }, [tile.visible, tile.terrain, isHighlighted, isPath, isSelected, isEnemy, isAttackable]);
   
-  // Edge line color — light blue accent
   const edgeColor = useMemo(() => {
     if (tile.visible === 'unexplored') return '#0a0a10';
+    if (isAttackable) return '#ff4444';
     if (isSelected) return '#00ddff';
     if (isPath) return '#0088aa';
-    if (isHighlighted) return '#3388aa';
+    if (isHighlighted) return isEnemy ? '#aa4444' : '#3388aa';
     if (tile.visible === 'explored') return '#1a1c22';
-    return '#3a5060'; // light blue-grey edge
-  }, [tile.visible, isHighlighted, isPath, isSelected]);
+    return '#3a5060';
+  }, [tile.visible, isHighlighted, isPath, isSelected, isEnemy, isAttackable]);
   
   const elevation = tile.visible === 'unexplored' ? 0 : tile.elevation;
   
   return (
     <group position={[tile.q, elevation, tile.r]}>
-      {/* Tile body — semi-transparent gun-metal */}
       <mesh
-        ref={meshRef}
         geometry={octGeo}
         onClick={(e: ThreeEvent<MouseEvent>) => { e.stopPropagation(); onClick(); }}
         onPointerEnter={(e: ThreeEvent<PointerEvent>) => { e.stopPropagation(); onPointerEnter(); }}
@@ -123,7 +77,6 @@ export default function OctileTileMesh({
         />
       </mesh>
       
-      {/* Tile edge outline — light blue wireframe */}
       <Line
         points={octEdgePoints}
         color={edgeColor}
@@ -132,70 +85,90 @@ export default function OctileTileMesh({
         opacity={tile.visible === 'unexplored' ? 0.1 : 0.6}
       />
       
-      {/* Resource indicator — icon-style markers */}
-      {tile.resourceType && tile.visible !== 'unexplored' && (
-        <group position={[0, 0.12, 0]}>
-          {/* Resource diamond shape */}
-          <mesh rotation={[0, Math.PI / 4, 0]}>
-            <boxGeometry args={[0.1, 0.06, 0.1]} />
-            <meshStandardMaterial
-              color={getResourceColor(tile.resourceType)}
-              emissive={getResourceColor(tile.resourceType)}
-              emissiveIntensity={0.8}
-              transparent
-              opacity={0.9}
-            />
-          </mesh>
-          {/* Glow ring under resource */}
-          <mesh position={[0, -0.04, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-            <ringGeometry args={[0.06, 0.1, 8]} />
-            <meshBasicMaterial
-              color={getResourceColor(tile.resourceType)}
-              transparent
-              opacity={0.4}
-            />
-          </mesh>
-        </group>
+      {tile.resourceType && tile.resourceAmount && tile.visible !== 'unexplored' && (
+        <ResourceIndicator type={tile.resourceType} amount={tile.resourceAmount} />
       )}
       
-      {/* Hero indicator */}
       {hasHero && (
-        <group position={[0, 0.25, 0]}>
-          {/* Body */}
-          <mesh position={[0, 0.2, 0]}>
-            <capsuleGeometry args={[0.12, 0.25, 4, 8]} />
-            <meshStandardMaterial
-              color={heroColor || '#ffffff'}
-              emissive={heroColor || '#ffffff'}
-              emissiveIntensity={0.6}
-              roughness={0.3}
-            />
-          </mesh>
-          {/* Shadow/glow ring */}
-          <mesh position={[0, 0.02, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-            <ringGeometry args={[0.15, 0.22, 16]} />
-            <meshStandardMaterial
-              color={heroColor || '#ffffff'}
-              emissive={heroColor || '#ffffff'}
-              emissiveIntensity={0.8}
-              transparent
-              opacity={0.5}
-            />
-          </mesh>
-        </group>
+        <HeroIndicator color={heroColor || '#ffffff'} />
       )}
     </group>
   );
 }
 
-function getResourceColor(resource: string): string {
-  switch (resource) {
-    case 'wood': return '#4a3520';
-    case 'stone': return '#666666';
-    case 'iron': return '#8888aa';
-    case 'food': return '#447733';
-    case 'water': return '#3344aa';
-    default: return '#555555';
+function ResourceIndicator({ type, amount }: { type: NonNullable<Tile['resourceType']>, amount: number }) {
+  const geo = resourceGeometries[type];
+  const { color, rotation } = getResourceStyle(type);
+  
+  return (
+    <group position={[0, 0.08, 0]}>
+      <mesh geometry={geo} rotation={rotation}>
+        <meshStandardMaterial color={color} roughness={0.6} />
+      </mesh>
+      <Text
+        position={[0.2, 0, 0]}
+        rotation={[-Math.PI / 2, 0, Math.PI / 2]}
+        fontSize={0.12}
+        color="#ffffff"
+        anchorX="left"
+        anchorY="middle"
+        outlineWidth={0.01}
+        outlineColor="#000000"
+      >
+        {amount}
+      </Text>
+    </group>
+  );
+}
+
+function HeroIndicator({ color }: { color: string }) {
+  return (
+    <group position={[0, 0.25, 0]}>
+      <mesh position={[0, 0.2, 0]}>
+        <capsuleGeometry args={[0.12, 0.25, 4, 8]} />
+        <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.6} roughness={0.3} />
+      </mesh>
+      <mesh position={[0, 0.02, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+        <ringGeometry args={[0.15, 0.22, 16]} />
+        <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.8} transparent opacity={0.5} />
+      </mesh>
+    </group>
+  );
+}
+
+// === Helpers ===
+
+function createOctagonGeometry(size: number = 0.46): THREE.BufferGeometry {
+  const shape = new THREE.Shape();
+  for (let i = 0; i < 8; i++) {
+    const angle = (i / 8) * Math.PI * 2 + Math.PI / 8;
+    const x = Math.cos(angle) * size;
+    const y = Math.sin(angle) * size;
+    if (i === 0) shape.moveTo(x, y); else shape.lineTo(x, y);
+  }
+  shape.closePath();
+  const geo = new THREE.ExtrudeGeometry(shape, { depth: 0.06, bevelEnabled: false });
+  geo.rotateX(-Math.PI / 2);
+  return geo;
+}
+
+function getOctagonEdgePoints(size: number = 0.46): [number, number, number][] {
+  const points: [number, number, number][] = [];
+  for (let i = 0; i <= 8; i++) {
+    const angle = ((i % 8) / 8) * Math.PI * 2 + Math.PI / 8;
+    points.push([Math.cos(angle) * size, 0.07, Math.sin(angle) * size]);
+  }
+  return points;
+}
+
+function getResourceStyle(type: string) {
+  switch (type) {
+    case 'wood': return { color: '#4a3520', rotation: new THREE.Euler(0, 0, Math.PI / 2) };
+    case 'stone': return { color: '#666666', rotation: new THREE.Euler(0, 0, 0) };
+    case 'iron': return { color: '#8888aa', rotation: new THREE.Euler(0, 0, 0) };
+    case 'food': return { color: '#447733', rotation: new THREE.Euler(0, 0, 0) };
+    case 'water': return { color: '#3344aa', rotation: new THREE.Euler(Math.PI / 2, 0, 0) };
+    default: return { color: '#555555', rotation: new THREE.Euler(0, 0, 0) };
   }
 }
 

@@ -8,6 +8,7 @@ export interface Tile {
   terrain: TerrainType;
   elevation: number;
   resourceType?: 'wood' | 'stone' | 'iron' | 'food' | 'water';
+  resourceAmount?: number;
   buildingId?: string;
   visible: 'unexplored' | 'explored' | 'visible';
 }
@@ -32,6 +33,8 @@ export interface Hero {
   position: { q: number; r: number };
   alive: boolean;
   respawnTimer: number; // 0 = alive, >0 = respawning
+  hasMoved: boolean;
+  hasAttacked: boolean;
   inventory: (Card | null)[];
   owner: string; // player id
 }

@@ -40,17 +40,27 @@ export function generateGrid(width: number, height: number, seed = 42): Tile[][]
       else if (noise < 0.88) terrain = 'mountain';
       else terrain = 'ruins';
       
-      // Add resources based on terrain
       let resourceType: Tile['resourceType'] = undefined;
-      if (terrain === 'forest' && random() > 0.5) resourceType = 'wood';
-      if (terrain === 'mountain' && random() > 0.6) resourceType = random() > 0.7 ? 'iron' : 'stone';
-      if (terrain === 'plains' && random() > 0.7) resourceType = 'food';
+      let resourceAmount: Tile['resourceAmount'] = undefined;
+      if (terrain === 'forest' && random() > 0.5) {
+        resourceType = 'wood';
+        resourceAmount = Math.floor(random() * 5) + 1;
+      }
+      if (terrain === 'mountain' && random() > 0.6) {
+        resourceType = random() > 0.7 ? 'iron' : 'stone';
+        resourceAmount = Math.floor(random() * 4) + 1;
+      }
+      if (terrain === 'plains' && random() > 0.7) {
+        resourceType = 'food';
+        resourceAmount = Math.floor(random() * 6) + 2;
+      }
       
       row.push({
         q, r,
         terrain,
         elevation: TERRAIN_CONFIG[terrain].elevation + (random() * 0.05),
         resourceType,
+        resourceAmount,
         visible: 'unexplored',
       });
     }
