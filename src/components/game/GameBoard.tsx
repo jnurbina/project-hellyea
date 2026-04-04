@@ -151,80 +151,54 @@ function CameraController() {
   return null;
 }
 
-// === Action Bubbles (3D, around selected hero) ===
+// === Action Toolbar (HTML overlay anchored to hero's 3D position) ===
 
-function ActionBubbles({ heroId }: { heroId: string }) {
+function ActionToolbar({ heroId }: { heroId: string }) {
   const gameState = useGameStore(s => s.gameState);
   const queuedActions = useGameStore(s => s.queuedActions);
   const setActionMode = useGameStore(s => s.setActionMode);
-  const selectHero = useGameStore(s => s.selectHero);
-  const groupRef = useRef<THREE.Group>(null);
-  const [visible, setVisible] = useState(false);
 
   const hero = useMemo(() => {
     if (!gameState) return null;
     return Object.values(gameState.players).flatMap(p => p.heroes).find(h => h.id === heroId);
   }, [gameState, heroId]);
 
-  // Animate in
-  useEffect(() => {
-    const timer = setTimeout(() => setVisible(true), 50);
-    return () => clearTimeout(timer);
-  }, []);
-
-  useFrame((_, delta) => {
-    if (groupRef.current) {
-      groupRef.current.rotation.y += delta * 0.3;
-    }
-  });
-
   if (!hero) return null;
-  
+
   const queued = queuedActions[heroId];
   const hasQueuedMove = !!queued?.moveDest;
   const hasQueuedAttack = !!queued?.attackTargetId;
 
   return (
-    <group position={[hero.position.q, 0.6, hero.position.r]} ref={groupRef}>
-      {/* Move bubble — above */}
-      {!hasQueuedMove && (
-        <group position={[0, visible ? 0.9 : 0.5, 0]} scale={visible ? 1 : 0}>
-          <mesh
-            onClick={(e) => { e.stopPropagation(); setActionMode('move'); }}
-          >
-            <sphereGeometry args={[0.15, 16, 12]} />
-            <meshStandardMaterial color="#22cc66" emissive="#22cc66" emissiveIntensity={0.6} transparent opacity={0.9} />
-          </mesh>
-          <Html center distanceFactor={8} style={{ pointerEvents: 'none' }}>
-            <div className="text-[10px] text-green-300 font-bold whitespace-nowrap select-none" style={{ textShadow: '0 0 4px black' }}>⬡</div>
-          </Html>
-        </group>
-      )}
-      
-      {/* Attack bubble — left */}
-      {!hasQueuedAttack && (
-        <group position={[visible ? -0.5 : -0.2, 0.5, 0]} scale={visible ? 1 : 0}>
-          <mesh
-            onClick={(e) => { e.stopPropagation(); setActionMode('attack'); }}
-          >
-            <sphereGeometry args={[0.15, 16, 12]} />
-            <meshStandardMaterial color="#cc3333" emissive="#cc3333" emissiveIntensity={0.6} transparent opacity={0.9} />
-          </mesh>
-          <Html center distanceFactor={8} style={{ pointerEvents: 'none' }}>
-            <div className="text-[10px] text-red-300 font-bold whitespace-nowrap select-none" style={{ textShadow: '0 0 4px black' }}>⚔</div>
-          </Html>
-        </group>
-      )}
-
-      {/* Deselect ring (click background to deselect) */}
-      <mesh
-        position={[0, 0.01, 0]}
-        rotation={[-Math.PI / 2, 0, 0]}
-        onClick={(e) => { e.stopPropagation(); selectHero(null); }}
-      >
-        <ringGeometry args={[0.6, 1.5, 32]} />
-        <meshBasicMaterial color="#000000" transparent opacity={0} />
-      </mesh>
+    <group position={[hero.position.q + 0.55, 0.5, hero.position.r]}>
+      <Html center style={{ pointerEvents: 'auto' }}>
+        <div className="flex flex-col gap-1 animate-in fade-in slide-in-from-left-2 duration-200">
+          {!hasQueuedMove && (
+            <button
+              onClick={(e) => { e.stopPropagation(); setActionMode('move'); }}
+              className="w-7 h-7 rounded bg-green-900/80 hover:bg-green-700/90 border border-green-500/60 flex items-center justify-center text-sm transition-all hover:scale-110 active:scale-95"
+              title="Move"
+            >
+              🥾
+            </button>
+          )}
+          {hasQueuedMove && (
+            <div className="w-7 h-7 rounded bg-green-900/30 border border-green-800/40 flex items-center justify-center text-[10px] text-green-600">✓</div>
+          )}
+          {!hasQueuedAttack && (
+            <button
+              onClick={(e) => { e.stopPropagation(); setActionMode('attack'); }}
+              className="w-7 h-7 rounded bg-red-900/80 hover:bg-red-700/90 border border-red-500/60 flex items-center justify-center text-sm transition-all hover:scale-110 active:scale-95"
+              title="Attack"
+            >
+              ⚔️
+            </button>
+          )}
+          {hasQueuedAttack && (
+            <div className="w-7 h-7 rounded bg-red-900/30 border border-red-800/40 flex items-center justify-center text-[10px] text-red-600">✓</div>
+          )}
+        </div>
+      </Html>
     </group>
   );
 }
@@ -380,9 +354,9 @@ function GameScene() {
         })
       )}
 
-      {/* Action bubbles for selected hero */}
+      {/* Action toolbar for selected hero */}
       {phase === 'planning' && selectedHeroId && actionMode === 'idle' && (
-        <ActionBubbles heroId={selectedHeroId} />
+        <ActionToolbar heroId={selectedHeroId} />
       )}
 
       {moveAnimation && <AnimatedHero animation={moveAnimation} />}
