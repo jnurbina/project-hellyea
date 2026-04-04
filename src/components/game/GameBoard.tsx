@@ -1,10 +1,80 @@
 'use client';
 
-import { useMemo } from 'react';
-import { Canvas } from '@react-three/fiber';
-import { OrbitControls, OrthographicCamera } from '@react-three/drei';
+import { useMemo, useRef, useEffect } from 'react';
+import { Canvas, useFrame, useThree } from '@react-three/fiber';
+import { OrthographicCamera } from '@react-three/drei';
+import * as THREE from 'three';
 import OctileTileMesh from './OctileTile';
 import { useGameStore } from '@/lib/game-store';
+
+// WASD + QE Camera Controller
+function WASDCameraControls({ center }: { center: [number, number, number] }) {
+  const { camera } = useThree();
+  const keysRef = useRef<Set<string>>(new Set());
+  const targetRef = useRef(new THREE.Vector3(...center));
+  const angleRef = useRef(Math.PI / 4); // 45 degrees initial
+  const distanceRef = useRef(20);
+  const PAN_SPEED = 0.3;
+  const ROTATE_SPEED = 0.02;
+  const ZOOM_SPEED = 2;
+  const ELEVATION = 20;
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      keysRef.current.add(e.key.toLowerCase());
+    };
+    const handleKeyUp = (e: KeyboardEvent) => {
+      keysRef.current.delete(e.key.toLowerCase());
+    };
+    const handleWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const ortho = camera as THREE.OrthographicCamera;
+      ortho.zoom = Math.max(15, Math.min(80, ortho.zoom - e.deltaY * 0.05));
+      ortho.updateProjectionMatrix();
+    };
+    
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    window.addEventListener('wheel', handleWheel, { passive: false });
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+      window.removeEventListener('wheel', handleWheel);
+    };
+  }, [camera]);
+
+  useFrame(() => {
+    const keys = keysRef.current;
+    const angle = angleRef.current;
+    
+    // Forward direction based on camera angle
+    const forwardX = -Math.sin(angle);
+    const forwardZ = -Math.cos(angle);
+    const rightX = Math.cos(angle);
+    const rightZ = -Math.sin(angle);
+    
+    // WASD panning
+    if (keys.has('w')) { targetRef.current.x += forwardX * PAN_SPEED; targetRef.current.z += forwardZ * PAN_SPEED; }
+    if (keys.has('s')) { targetRef.current.x -= forwardX * PAN_SPEED; targetRef.current.z -= forwardZ * PAN_SPEED; }
+    if (keys.has('a')) { targetRef.current.x -= rightX * PAN_SPEED; targetRef.current.z -= rightZ * PAN_SPEED; }
+    if (keys.has('d')) { targetRef.current.x += rightX * PAN_SPEED; targetRef.current.z += rightZ * PAN_SPEED; }
+    
+    // QE rotation
+    if (keys.has('q')) { angleRef.current -= ROTATE_SPEED; }
+    if (keys.has('e')) { angleRef.current += ROTATE_SPEED; }
+    
+    // Update camera position
+    const dist = distanceRef.current;
+    camera.position.set(
+      targetRef.current.x + Math.sin(angleRef.current) * dist,
+      ELEVATION,
+      targetRef.current.z + Math.cos(angleRef.current) * dist
+    );
+    camera.lookAt(targetRef.current);
+  });
+
+  return null;
+}
 
 function GameScene() {
   const gameState = useGameStore(s => s.gameState);
@@ -52,23 +122,29 @@ function GameScene() {
         near={0.1}
         far={200}
       />
-      <OrbitControls
-        target={[centerX, 0, centerZ]}
-        enableRotate={true}
-        enablePan={true}
-        enableZoom={true}
-        minZoom={15}
-        maxZoom={80}
-        maxPolarAngle={Math.PI / 2.5}
-        minPolarAngle={Math.PI / 6}
-      />
+      <WASDCameraControls center={[centerX, 0, centerZ]} />
       
-      {/* Ambient light — noir style, low */}
-      <ambientLight intensity={0.15} />
-      {/* Directional — sharp shadows */}
-      <directionalLight position={[10, 20, 10]} intensity={0.6} color="#aabbcc" />
-      {/* Rim light */}
-      <directionalLight position={[-10, 10, -10]} intensity={0.2} color="#223344" />
+      {/* Lighting — noir style */}
+      <ambientLight intensity={0.2} color="#334455" />
+      <directionalLight position={[15, 25, 10]} intensity={0.7} color="#99aacc" />
+      <directionalLight position={[-10, 15, -10]} intensity={0.25} color="#223344" />
+      {/* Subtle ground bounce */}
+      <pointLight position={[centerX, -2, centerZ]} intensity={0.1} color="#224466" distance={40} />
+      
+      {/* Ground plane — dark void beneath the grid */}
+      <mesh position={[centerX - 0.5, -0.5, centerZ - 0.5]} rotation={[-Math.PI / 2, 0, 0]}>
+        <planeGeometry args={[mapWidth + 10, mapHeight + 10]} />
+        <meshStandardMaterial color="#08080c" roughness={0.95} metalness={0.1} />
+      </mesh>
+      
+      {/* Subtle grid-boundary glow ring */}
+      <mesh position={[centerX - 0.5, -0.05, centerZ - 0.5]} rotation={[-Math.PI / 2, 0, 0]}>
+        <ringGeometry args={[Math.max(mapWidth, mapHeight) * 0.52, Math.max(mapWidth, mapHeight) * 0.55, 64]} />
+        <meshBasicMaterial color="#1a3040" transparent opacity={0.3} />
+      </mesh>
+      
+      {/* Fog/atmosphere — dark edges */}
+      <fog attach="fog" args={['#060810', 30, 60]} />
       
       {/* Grid */}
       {grid.map((row, r) =>

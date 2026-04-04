@@ -1,15 +1,17 @@
 'use client';
 
-import { useMemo, useRef, useState } from 'react';
+import { useMemo, useRef } from 'react';
 import * as THREE from 'three';
-import { ThreeEvent } from '@react-three/fiber';
+import { ThreeEvent, extend } from '@react-three/fiber';
+import { Line } from '@react-three/drei';
 import { Tile, TERRAIN_CONFIG } from '@/lib/types';
 
 // Create octagon geometry (flat, lying on XZ plane)
-function createOctagonGeometry(size: number = 0.48): THREE.BufferGeometry {
+// Create octagon shape for the tile body
+function createOctagonGeometry(size: number = 0.46): THREE.BufferGeometry {
   const shape = new THREE.Shape();
   const sides = 8;
-  const angleOffset = Math.PI / 8; // Rotate so flat side faces camera
+  const angleOffset = Math.PI / 8;
   
   for (let i = 0; i < sides; i++) {
     const angle = (i / sides) * Math.PI * 2 + angleOffset;
@@ -21,17 +23,29 @@ function createOctagonGeometry(size: number = 0.48): THREE.BufferGeometry {
   shape.closePath();
   
   const geo = new THREE.ExtrudeGeometry(shape, {
-    depth: 0.08,
+    depth: 0.06,
     bevelEnabled: false,
   });
-  
-  // Rotate to lie flat on XZ
   geo.rotateX(-Math.PI / 2);
-  
   return geo;
 }
 
+// Edge points for octagon outline
+function getOctagonEdgePoints(size: number = 0.46): [number, number, number][] {
+  const points: [number, number, number][] = [];
+  const sides = 8;
+  const angleOffset = Math.PI / 8;
+  
+  for (let i = 0; i <= sides; i++) {
+    const angle = ((i % sides) / sides) * Math.PI * 2 + angleOffset;
+    points.push([Math.cos(angle) * size, 0.07, Math.sin(angle) * size]);
+  }
+  
+  return points;
+}
+
 const octGeo = createOctagonGeometry();
+const octEdgePoints = getOctagonEdgePoints();
 
 interface OctileTileProps {
   tile: Tile;
@@ -53,37 +67,46 @@ export default function OctileTileMesh({
   
   const config = TERRAIN_CONFIG[tile.terrain];
   
-  // Determine tile color based on visibility and state
+  // Tile fill color — gun-metal grey base, terrain tinted
   const color = useMemo(() => {
-    if (tile.visible === 'unexplored') return '#0a0a0a';
+    if (tile.visible === 'unexplored') return '#0c0c0e';
     
-    let baseColor = config.color;
+    // Gun-metal grey base with terrain tint
+    const terrainTints: Record<string, string> = {
+      plains:   '#2a2c30',
+      forest:   '#1e2a22',
+      mountain: '#33353a',
+      water:    '#181c2a',
+      ruins:    '#2a2430',
+    };
+    let baseColor = terrainTints[tile.terrain] || '#2a2c30';
+    
     if (tile.visible === 'explored') {
-      // Darken explored but not currently visible
-      baseColor = darkenColor(baseColor, 0.4);
+      baseColor = darkenColor(baseColor, 0.35);
     }
     
-    if (isSelected) return '#00ffff';
-    if (isPath) return '#004444';
-    if (isHighlighted) return '#1a3a3a';
+    if (isSelected) return '#003844';
+    if (isPath) return '#002a33';
+    if (isHighlighted) return '#1e2830';
     
     return baseColor;
-  }, [tile.visible, tile.terrain, isHighlighted, isPath, isSelected, config.color]);
+  }, [tile.visible, tile.terrain, isHighlighted, isPath, isSelected]);
   
-  // Edge glow color
+  // Edge line color — light blue accent
   const edgeColor = useMemo(() => {
-    if (tile.visible === 'unexplored') return '#050505';
-    if (isSelected) return '#00ffff';
-    if (isPath) return '#007777';
-    if (isHighlighted) return '#003333';
-    return '#111111';
+    if (tile.visible === 'unexplored') return '#0a0a10';
+    if (isSelected) return '#00ddff';
+    if (isPath) return '#0088aa';
+    if (isHighlighted) return '#3388aa';
+    if (tile.visible === 'explored') return '#1a1c22';
+    return '#3a5060'; // light blue-grey edge
   }, [tile.visible, isHighlighted, isPath, isSelected]);
   
   const elevation = tile.visible === 'unexplored' ? 0 : tile.elevation;
   
   return (
     <group position={[tile.q, elevation, tile.r]}>
-      {/* Tile body */}
+      {/* Tile body — semi-transparent gun-metal */}
       <mesh
         ref={meshRef}
         geometry={octGeo}
@@ -93,23 +116,46 @@ export default function OctileTileMesh({
       >
         <meshStandardMaterial
           color={color}
-          emissive={edgeColor}
-          emissiveIntensity={0.3}
-          roughness={0.8}
-          metalness={0.2}
+          transparent
+          opacity={tile.visible === 'unexplored' ? 0.3 : 0.75}
+          roughness={0.7}
+          metalness={0.4}
         />
       </mesh>
       
-      {/* Resource indicator */}
+      {/* Tile edge outline — light blue wireframe */}
+      <Line
+        points={octEdgePoints}
+        color={edgeColor}
+        lineWidth={1}
+        transparent
+        opacity={tile.visible === 'unexplored' ? 0.1 : 0.6}
+      />
+      
+      {/* Resource indicator — icon-style markers */}
       {tile.resourceType && tile.visible !== 'unexplored' && (
-        <mesh position={[0, 0.15, 0]}>
-          <boxGeometry args={[0.12, 0.12, 0.12]} />
-          <meshStandardMaterial
-            color={getResourceColor(tile.resourceType)}
-            emissive={getResourceColor(tile.resourceType)}
-            emissiveIntensity={0.5}
-          />
-        </mesh>
+        <group position={[0, 0.12, 0]}>
+          {/* Resource diamond shape */}
+          <mesh rotation={[0, Math.PI / 4, 0]}>
+            <boxGeometry args={[0.1, 0.06, 0.1]} />
+            <meshStandardMaterial
+              color={getResourceColor(tile.resourceType)}
+              emissive={getResourceColor(tile.resourceType)}
+              emissiveIntensity={0.8}
+              transparent
+              opacity={0.9}
+            />
+          </mesh>
+          {/* Glow ring under resource */}
+          <mesh position={[0, -0.04, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+            <ringGeometry args={[0.06, 0.1, 8]} />
+            <meshBasicMaterial
+              color={getResourceColor(tile.resourceType)}
+              transparent
+              opacity={0.4}
+            />
+          </mesh>
+        </group>
       )}
       
       {/* Hero indicator */}

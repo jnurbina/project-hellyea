@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useState, useCallback } from 'react';
 import { useGameStore } from '@/lib/game-store';
 
 export default function GameHUD() {
@@ -7,6 +8,35 @@ export default function GameHUD() {
   const selectedHero = useGameStore(s => s.selectedHero);
   const localPlayerId = useGameStore(s => s.localPlayerId);
   const submitTurn = useGameStore(s => s.submitTurn);
+  const [showEndTurnConfirm, setShowEndTurnConfirm] = useState(false);
+
+  const handleEndTurn = useCallback(() => {
+    if (showEndTurnConfirm) {
+      submitTurn();
+      setShowEndTurnConfirm(false);
+    } else {
+      setShowEndTurnConfirm(true);
+    }
+  }, [showEndTurnConfirm, submitTurn]);
+
+  const handleCancelEndTurn = useCallback(() => {
+    setShowEndTurnConfirm(false);
+  }, []);
+
+  // Spacebar = End Turn
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.code === 'Space') {
+        e.preventDefault();
+        handleEndTurn();
+      }
+      if (e.code === 'Escape' && showEndTurnConfirm) {
+        handleCancelEndTurn();
+      }
+    };
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [handleEndTurn, handleCancelEndTurn, showEndTurnConfirm]);
 
   if (!gameState) return null;
 
@@ -67,12 +97,36 @@ export default function GameHUD() {
         
         {/* End Turn button */}
         <button
-          onClick={submitTurn}
+          onClick={handleEndTurn}
           className="pointer-events-auto bg-cyan-900/50 hover:bg-cyan-800/50 border border-cyan-500/50 rounded px-6 py-3 font-mono text-sm text-cyan-400 font-bold uppercase tracking-wider transition-colors self-center"
         >
-          END TURN
+          END TURN <span className="text-gray-500 text-[10px]">[SPACE]</span>
         </button>
       </div>
+
+      {/* End Turn Confirmation */}
+      {showEndTurnConfirm && (
+        <div className="absolute inset-0 flex items-center justify-center bg-black/50 pointer-events-auto">
+          <div className="bg-black/90 border border-cyan-500/50 rounded-lg px-8 py-6 font-mono text-center shadow-[0_0_30px_rgba(0,255,255,0.15)]">
+            <div className="text-cyan-400 text-lg font-bold mb-4">END TURN?</div>
+            <div className="text-gray-400 text-xs mb-6">Confirm to submit your actions</div>
+            <div className="flex gap-4 justify-center">
+              <button
+                onClick={handleEndTurn}
+                className="bg-cyan-900/50 hover:bg-cyan-700/50 border border-cyan-500 rounded px-6 py-2 text-cyan-400 text-sm uppercase tracking-wider transition-colors"
+              >
+                Confirm <span className="text-gray-500 text-[10px]">[SPACE]</span>
+              </button>
+              <button
+                onClick={handleCancelEndTurn}
+                className="bg-gray-800/50 hover:bg-gray-700/50 border border-gray-600 rounded px-6 py-2 text-gray-400 text-sm uppercase tracking-wider transition-colors"
+              >
+                Cancel <span className="text-gray-500 text-[10px]">[ESC]</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Selected hero detail */}
       {selectedHeroData && (
