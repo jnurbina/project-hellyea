@@ -105,8 +105,10 @@ function CameraController() {
     const keys = keysRef.current;
     const locked = useGameStore.getState().resolutionLocked;
 
-    // Keyboard interrupts animation (only if unlocked)
-    if (!locked && keys.size > 0) animatingRef.current = false;
+    // Only camera-control keys (WASD/QE) interrupt animation
+    const cameraKeys = ['w', 'a', 's', 'd', 'q', 'e'];
+    const hasCameraKey = cameraKeys.some(k => keys.has(k));
+    if (!locked && hasCameraKey) animatingRef.current = false;
 
     // WASD pan only during planning
     if (!locked) {
