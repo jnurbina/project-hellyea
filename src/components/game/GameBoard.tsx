@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useRef, useEffect, useCallback } from 'react';
+import { useMemo, useRef, useEffect, useCallback, useState } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrthographicCamera } from '@react-three/drei';
 import * as THREE from 'three';
@@ -50,9 +50,10 @@ function CameraController() {
     animatingRef.current = true;
   }, [cameraConfig]);
 
-  // Expose drag state for click suppression
+  // Expose camera state for debug overlay + drag state for click suppression
   useEffect(() => {
     (window as any).__cameraDragDist = dragDistRef;
+    (window as any).__cameraDebug = { targetRef, angleRef, zoomRef, distanceRef };
   }, []);
 
   useEffect(() => {
@@ -210,11 +211,17 @@ function GameScene() {
       <CameraController />
 
       {/* Lighting — noir */}
-      <ambientLight intensity={0.25} color="#334455" />
-      <directionalLight position={[15, 25, 10]} intensity={0.7} color="#99aacc" />
-      <directionalLight position={[-10, 15, -10]} intensity={0.25} color="#223344" />
+      <ambientLight intensity={0.3} color="#445566" />
+      <directionalLight position={[15, 25, 10]} intensity={0.8} color="#99aacc" />
+      <directionalLight position={[-10, 15, -10]} intensity={0.3} color="#334455" />
 
-      <fog attach="fog" args={['#060810', 35, 70]} />
+      <fog attach="fog" args={['#0a0c10', 40, 80]} />
+
+      {/* Ground plane — gun-metal grey */}
+      <mesh position={[mapWidth / 2 - 0.5, -0.15, mapHeight / 2 - 0.5]} rotation={[-Math.PI / 2, 0, 0]}>
+        <planeGeometry args={[mapWidth + 20, mapHeight + 20]} />
+        <meshStandardMaterial color="#25272b" roughness={0.85} metalness={0.15} />
+      </mesh>
 
       {/* Grid */}
       {grid.map((row, r) =>
@@ -260,12 +267,68 @@ function GameScene() {
   );
 }
 
-export default function GameBoard() {
+function DebugOverlay() {
+  const [stats, setStats] = useState({ x: 0, z: 0, angle: 0, zoom: 0, dist: 0 });
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const dbg = (window as any).__cameraDebug;
+      if (!dbg) return;
+      setStats({
+        x: dbg.targetRef.current.x,
+        z: dbg.targetRef.current.z,
+        angle: ((dbg.angleRef.current * 180 / Math.PI) % 360),
+        zoom: dbg.zoomRef.current,
+        dist: dbg.distanceRef.current,
+      });
+    }, 200);
+    return () => clearInterval(interval);
+  }, []);
+
+  const gameState = useGameStore(s => s.gameState);
+  const activePlayerId = useGameStore(s => s.activePlayerId);
+
   return (
-    <div className="w-full h-full bg-black">
+    <div className="absolute top-4 right-4 z-50 pointer-events-none">
+      <div className="bg-black/70 border border-gray-700 rounded px-3 py-2 font-mono text-[10px] text-gray-400 space-y-0.5 min-w-[180px]">
+        <div className="text-gray-500 font-bold mb-1">DEBUG</div>
+        <div>cam.target: ({stats.x.toFixed(1)}, {stats.z.toFixed(1)})</div>
+        <div>cam.angle: {stats.angle.toFixed(1)}°</div>
+        <div>cam.zoom: {stats.zoom.toFixed(1)}</div>
+        <div>cam.dist: {stats.dist.toFixed(1)}</div>
+        {gameState && <>
+          <div className="border-t border-gray-800 mt-1 pt-1">round: {gameState.turn}</div>
+          <div>active: {activePlayerId}</div>
+          <div>phase: {gameState.phase}</div>
+          <div>heroes: {Object.values(gameState.players).flatMap(p => p.heroes).filter(h => h.alive).length} alive</div>
+        </>}
+      </div>
+    </div>
+  );
+}
+
+export default function GameBoard() {
+  const [showDebug, setShowDebug] = useState(false);
+
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === '`' || e.key === '~') {
+        e.preventDefault();
+        setShowDebug(prev => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, []);
+
+  return (
+    <div className="w-full h-full bg-[#0a0c10] relative">
       <Canvas>
         <GameScene />
       </Canvas>
+      {showDebug && <DebugOverlay />}
+      {/* Debug toggle hint */}
+      <div className="absolute bottom-2 right-2 text-gray-700 text-[9px] font-mono pointer-events-none">Press ` for debug</div>
     </div>
   );
 }

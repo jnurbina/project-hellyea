@@ -112,7 +112,8 @@ export function findPath(
   grid: Tile[][],
   startQ: number, startR: number,
   endQ: number, endR: number,
-  maxCost: number = Infinity
+  maxCost: number = Infinity,
+  occupied?: Set<string>
 ): { q: number; r: number }[] | null {
   const key = (q: number, r: number) => `${q},${r}`;
   const start = key(startQ, startR);
@@ -163,6 +164,7 @@ export function findPath(
       const tile = grid[nr][nq];
       const moveCost = TERRAIN_CONFIG[tile.terrain].moveCost;
       if (moveCost >= 99) continue; // impassable
+      if (occupied?.has(nKey)) continue; // tile occupied by another unit
       
       const isDiagonal = dir.dq !== 0 && dir.dr !== 0;
       const stepCost = moveCost * (isDiagonal ? 1.414 : 1);

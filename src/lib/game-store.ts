@@ -23,6 +23,18 @@ function cloneGameState(gs: GameState): GameState {
   };
 }
 
+/** Get set of all tiles occupied by living heroes (except excludeId) */
+function getOccupiedTiles(gs: GameState, excludeId?: string): Set<string> {
+  const occupied = new Set<string>();
+  for (const player of Object.values(gs.players)) {
+    for (const hero of player.heroes) {
+      if (!hero.alive || hero.id === excludeId) continue;
+      occupied.add(`${hero.position.q},${hero.position.r}`);
+    }
+  }
+  return occupied;
+}
+
 const getPlayerHeroMidpoint = (player: Player): THREE.Vector3 => {
   const living = player.heroes.filter(h => h.alive);
   if (living.length === 0) return new THREE.Vector3();
@@ -152,7 +164,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
       set({ hoveredTile: { q, r }, currentPath: null });
       return;
     }
-    const fullPath = findPath(gameState.grid, hero.position.q, hero.position.r, q, r);
+    const occupied = getOccupiedTiles(gameState, hero.id);
+    const fullPath = findPath(gameState.grid, hero.position.q, hero.position.r, q, r, Infinity, occupied);
     const truncated = fullPath ? truncatePathToMovement(fullPath, gameState.grid, hero.stats.mov) : null;
     set({ hoveredTile: { q, r }, currentPath: truncated });
   },
@@ -168,13 +181,17 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const hero = player?.heroes.find(h => h.id === heroId);
     if (!hero || !hero.alive || hero.hasMoved) return;
 
-    const fullPath = findPath(gs.grid, hero.position.q, hero.position.r, q, r);
+    // Check destination isn't occupied
+    const occupied = getOccupiedTiles(gs, hero.id);
+    const fullPath = findPath(gs.grid, hero.position.q, hero.position.r, q, r, Infinity, occupied);
     if (!fullPath || fullPath.length < 2) return;
 
     const truncated = truncatePathToMovement(fullPath, gs.grid, hero.stats.mov);
     if (!truncated || truncated.length < 2) return;
 
+    // Make sure final tile isn't occupied
     const dest = truncated[truncated.length - 1];
+    if (occupied.has(`${dest.q},${dest.r}`)) return;
     hero.position = { q: dest.q, r: dest.r };
     hero.hasMoved = true;
 

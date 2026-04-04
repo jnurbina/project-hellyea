@@ -105,9 +105,9 @@ export const TERRAIN_CONFIG: Record<TerrainType, {
   color: string;
   elevation: number;
 }> = {
-  plains:   { moveCost: 1, blocksLoS: false, reducesVis: 0, color: '#2a2a2a', elevation: 0 },
-  forest:   { moveCost: 2, blocksLoS: false, reducesVis: 1, color: '#1a2a1a', elevation: 0.1 },
-  mountain: { moveCost: 3, blocksLoS: true,  reducesVis: 0, color: '#3a3a3a', elevation: 0.5 },
-  water:    { moveCost: 99, blocksLoS: false, reducesVis: 0, color: '#0a0a1a', elevation: -0.1 },
-  ruins:    { moveCost: 1, blocksLoS: false, reducesVis: 0, color: '#2a1a2a', elevation: 0.05 },
+  plains:   { moveCost: 1, blocksLoS: false, reducesVis: 0, color: '#3a3c40', elevation: 0 },
+  forest:   { moveCost: 2, blocksLoS: false, reducesVis: 1, color: '#2a3a2a', elevation: 0.15 },
+  mountain: { moveCost: 3, blocksLoS: true,  reducesVis: 0, color: '#4a4c50', elevation: 0.5 },
+  water:    { moveCost: 99, blocksLoS: false, reducesVis: 0, color: '#1a2030', elevation: -0.1 },
+  ruins:    { moveCost: 1, blocksLoS: false, reducesVis: 0, color: '#3a2a3a', elevation: 0.08 },
 };
