@@ -12,6 +12,7 @@ import OctileTileMesh from './OctileTile';
 function CameraController() {
   const { camera, gl } = useThree();
   const cameraConfig = useGameStore(s => s.cameraConfig);
+  const cameraConfigVersion = useGameStore(s => s.cameraConfigVersion);
   const resolutionLocked = useGameStore(s => s.resolutionLocked);
 
   const targetRef = useRef(new THREE.Vector3(10, 0, 10));
@@ -28,11 +29,12 @@ function CameraController() {
   const ELEVATION = 12;
 
   // When store pushes a new cameraConfig, snap to it
+  // Uses version counter to guarantee useEffect fires on every update
   useEffect(() => {
     if (!cameraConfig) return;
     animTargetRef.current = { ...cameraConfig, target: cameraConfig.target.clone() };
     animatingRef.current = true;
-  }, [cameraConfig]);
+  }, [cameraConfigVersion]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     (window as any).__cameraDragDist = dragDistRef;
@@ -167,7 +169,7 @@ function ActionToolbar({ heroId }: { heroId: string }) {
 
   const queued = queuedActions[heroId];
   const hasQueuedMove = !!queued?.moveDest;
-  const hasQueuedAttack = !!queued?.attackTargetId;
+  const hasQueuedAttack = !!queued?.attackTargetTile;
 
   return (
     <group position={[hero.position.q + 0.55, 0.5, hero.position.r]}>

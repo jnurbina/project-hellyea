@@ -79,16 +79,24 @@ function computeMoveTiles(gs: GameState, hero: Hero): Set<string> {
   return reachable;
 }
 
+/** Compute all tiles in attack range (not just enemy-occupied ones) */
 function computeAttackTiles(gs: GameState, hero: Hero): Set<string> {
   const attackable = new Set<string>();
   const rng = hero.stats.rng;
-  // Check from hero's queued position if they have a queued move
   const hq = hero.position.q;
   const hr = hero.position.r;
-  for (const h of getAllHeroes(gs)) {
-    if (!h.alive || h.owner === hero.owner) continue;
-    const dist = octileDistance(hq, hr, h.position.q, h.position.r);
-    if (dist <= rng) attackable.add(`${h.position.q},${h.position.r}`);
+  const grid = gs.grid;
+  for (let r = 0; r < grid.length; r++) {
+    for (let q = 0; q < grid[0].length; q++) {
+      if (q === hq && r === hr) continue;
+      const dist = octileDistance(hq, hr, q, r);
+      if (dist <= rng) {
+        const tile = grid[r][q];
+        if (TERRAIN_CONFIG[tile.terrain].moveCost < 99) { // can't attack water
+          attackable.add(`${q},${r}`);
+        }
+      }
+    }
   }
   return attackable;
 }
@@ -121,7 +129,7 @@ export type GamePhase = 'planning' | 'resolution';
 export interface QueuedAction {
   movePath?: { q: number; r: number }[];  // full path for animation
   moveDest?: { q: number; r: number };
-  attackTargetId?: string;
+  attackTargetTile?: { q: number; r: number };  // tile position, not hero ID
 }
 
 export interface CameraConfig {
@@ -164,6 +172,7 @@ interface GameStore {
 
   // Camera & animation
   cameraConfig: CameraConfig | null;
+  cameraConfigVersion: number;  // incremented to force useEffect trigger
   moveAnimation: MoveAnimation | null;
   onCameraArrived: (() => void) | null; // callback when camera finishes transition
 
@@ -179,7 +188,8 @@ interface GameStore {
   cancelEndTurn: () => void;
   tickMoveAnimation: (delta: number) => boolean;
   processNextResolution: () => void;
-  executeAttack: (attackerId: string, targetId: string) => void;
+  executeAttack: () => void; // deprecated
+  executeAttackTile: (attackerId: string, targetTile: { q: number; r: number }) => void;
   startResolution: () => void;
   startNewRound: () => void;
   updateVisibility: () => void;
@@ -212,6 +222,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
   targetHeroId: null,
   showEndTurnConfirm: false,
   cameraConfig: null,
+  cameraConfigVersion: 0,
   moveAnimation: null,
   onCameraArrived: null,
 
@@ -253,7 +264,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       resolutionLocked: false,
       actionMode: 'idle',
       showEndTurnConfirm: false,
-      cameraConfig: { target: p1mid, angle: Math.PI * 1.25, zoom: 120 },
+      ...makeCameraConfig(p1mid, Math.PI * 1.25, 120),
     });
 
     get().updateVisibility();
@@ -277,7 +288,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
     if (mode === 'move' && !queued?.moveDest) {
       set({ actionMode: 'move', moveTiles: computeMoveTiles(gameState, hero), attackTiles: new Set(), pendingTarget: null, targetHeroId: null });
-    } else if (mode === 'attack' && !queued?.attackTargetId) {
+    } else if (mode === 'attack' && !queued?.attackTargetTile) {
       // If hero has a queued move, compute attack from that position
       let attackHero = hero;
       if (queued?.moveDest) {
@@ -345,17 +356,18 @@ export const useGameStore = create<GameStore>((set, get) => ({
       }
     } else if (actionMode === 'attack') {
       if (!get().attackTiles.has(tileKey)) return;
+
+      // Can target any tile in range (empty or occupied)
       const enemy = getAllHeroes(gameState).find(h => h.alive && h.position.q === q && h.position.r === r && h.owner !== hero.owner);
-      if (!enemy) return;
 
       if (pendingTarget && pendingTarget.q === q && pendingTarget.r === r) {
-        // Confirmed attack — queue it
+        // Confirmed attack — queue the TILE position
         const newQueued = { ...get().queuedActions };
-        newQueued[hero.id] = { ...newQueued[hero.id], attackTargetId: enemy.id };
+        newQueued[hero.id] = { ...newQueued[hero.id], attackTargetTile: { q, r } };
 
-        set({ queuedActions: newQueued, actionMode: 'idle', attackTiles: new Set(), pendingTarget: null, targetHeroId: enemy.id });
+        set({ queuedActions: newQueued, actionMode: 'idle', attackTiles: new Set(), pendingTarget: null, targetHeroId: enemy?.id || null });
       } else {
-        set({ pendingTarget: { q, r }, targetHeroId: enemy.id });
+        set({ pendingTarget: { q, r }, targetHeroId: enemy?.id || null });
       }
     } else {
       // Idle mode — clicking on own hero selects, clicking elsewhere selects hero on tile
@@ -388,7 +400,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
         pendingTarget: null,
         targetHeroId: null,
         currentPath: null,
-        cameraConfig: { target: p2mid, angle: Math.PI * 0.25, zoom: 120 },
+        ...makeCameraConfig(p2mid, Math.PI * 0.25, 120),
       });
       get().updateVisibility();
     } else {
@@ -408,7 +420,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     // Build resolution order: all heroes with queued actions, sorted by SPD
     const allHeroes = getAllHeroes(gameState).filter(h => h.alive);
     const order = allHeroes
-      .filter(h => queuedActions[h.id]?.moveDest || queuedActions[h.id]?.attackTargetId)
+      .filter(h => queuedActions[h.id]?.moveDest || queuedActions[h.id]?.attackTargetTile)
       .sort((a, b) => b.stats.spd - a.stats.spd)
       .map(h => h.id);
 
@@ -455,11 +467,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     // Step 1: Pan camera to the hero, WAIT for arrival, then execute
     set({
       selectedHeroId: heroId, // show who's acting
-      cameraConfig: {
-        target: new THREE.Vector3(hero.position.q, 0, hero.position.r),
-        angle: get().cameraConfig?.angle ?? Math.PI / 4,
-        zoom: 120,
-      },
+      ...makeCameraConfig(new THREE.Vector3(hero.position.q, 0, hero.position.r), get().cameraConfig?.angle ?? Math.PI / 4, 120),
       onCameraArrived: () => {
         set({ onCameraArrived: null });
         // Brief pause after camera arrives so player can see who's acting
@@ -473,8 +481,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
                 progress: 0,
               },
             });
-          } else if (action.attackTargetId) {
-            get().executeAttack(heroId, action.attackTargetId);
+          } else if (action.attackTargetTile) {
+            get().executeAttackTile(heroId, action.attackTargetTile);
           } else {
             set({ resolutionIndex: resolutionIndex + 1 });
             setTimeout(() => get().processNextResolution(), 500);
@@ -484,44 +492,48 @@ export const useGameStore = create<GameStore>((set, get) => ({
     });
   },
 
-  executeAttack: (attackerId: string, targetId: string) => {
+  executeAttack: () => { /* deprecated, use executeAttackTile */ },
+
+  executeAttackTile: (attackerId: string, targetTile: { q: number; r: number }) => {
     const { gameState, resolutionIndex } = get();
     if (!gameState) return;
 
     const gs = cloneGameState(gameState);
     const attacker = findHero(gs, attackerId);
-    const target = findHero(gs, targetId);
-
-    if (!attacker || !target || !target.alive) {
+    if (!attacker || !attacker.alive) {
       set({ resolutionIndex: resolutionIndex + 1 });
       setTimeout(() => get().processNextResolution(), 300);
       return;
     }
 
-    // Show target panel, pan camera to target
+    // Check if anyone is actually on that tile NOW (at resolution time)
+    const target = getAllHeroes(gs).find(
+      h => h.alive && h.position.q === targetTile.q && h.position.r === targetTile.r && h.owner !== attacker.owner
+    );
+
+    // Pan camera to the targeted tile
     set({
-      targetHeroId: targetId,
-      selectedHeroId: attackerId, // keep attacker shown
-      cameraConfig: {
-        target: new THREE.Vector3(target.position.q, 0, target.position.r),
-        angle: get().cameraConfig?.angle ?? Math.PI / 4,
-        zoom: 120,
-      },
+      targetHeroId: target?.id || null,
+      selectedHeroId: attackerId,
+      ...makeCameraConfig(new THREE.Vector3(targetTile.q, 0, targetTile.r), get().cameraConfig?.angle ?? Math.PI / 4, 120),
       onCameraArrived: () => {
         set({ onCameraArrived: null });
-        // Apply damage after camera arrives
         setTimeout(() => {
-          const damage = Math.max(1, attacker.stats.atk - target.stats.def);
-          target.stats.hp -= damage;
-          if (target.stats.hp <= 0) { target.stats.hp = 0; target.alive = false; }
+          if (target) {
+            // Hit! Apply damage
+            const damage = Math.max(1, attacker.stats.atk - target.stats.def);
+            target.stats.hp -= damage;
+            if (target.stats.hp <= 0) { target.stats.hp = 0; target.alive = false; }
+          }
+          // Miss or hit, attacker used their attack
           attacker.hasAttacked = true;
           set({ gameState: gs });
 
-          // Hold so player can see the HP change
+          // Hold so player sees result
           setTimeout(() => {
             set({ resolutionIndex: resolutionIndex + 1, targetHeroId: null, selectedHeroId: null });
             setTimeout(() => get().processNextResolution(), 500);
-          }, 1000);
+          }, target ? 1000 : 500); // shorter hold on miss
         }, 300);
       },
     });
@@ -558,7 +570,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       attackTiles: new Set(),
       pendingTarget: null,
       targetHeroId: null,
-      cameraConfig: { target: p1mid, angle: Math.PI * 1.25, zoom: 120 },
+      ...makeCameraConfig(p1mid, Math.PI * 1.25, 120),
     });
 
     get().updateVisibility();
@@ -586,9 +598,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
           // Now check if this hero also has an attack queued
           const action = queuedActions[moveAnimation.heroId];
-          if (action?.attackTargetId) {
+          if (action?.attackTargetTile) {
             setTimeout(() => {
-              get().executeAttack(moveAnimation.heroId, action.attackTargetId!);
+              get().executeAttackTile(moveAnimation.heroId, action.attackTargetTile!);
             }, 300);
           } else {
             // Move to next resolution
@@ -610,29 +622,18 @@ export const useGameStore = create<GameStore>((set, get) => ({
   },
 
   updateVisibility: () => {
-    const { gameState, planningPlayerId } = get();
+    const { gameState } = get();
     if (!gameState) return;
 
     const gs = cloneGameState(gameState);
-    const player = gs.players[planningPlayerId];
-    if (!player) return;
 
+    // Fog of war disabled — all tiles visible
     for (const row of gs.grid) {
       for (const tile of row) {
-        if (tile.visible === 'visible') tile.visible = 'explored';
+        tile.visible = 'visible';
       }
     }
 
-    for (const hero of player.heroes) {
-      if (!hero.alive) continue;
-      const vis = calculateVisibility(gs.grid, hero.position.q, hero.position.r, hero.stats.vis);
-      for (const key of vis) {
-        const [tq, tr] = key.split(',').map(Number);
-        if (tr >= 0 && tr < gs.grid.length && tq >= 0 && tq < gs.grid[0].length) {
-          gs.grid[tr][tq].visible = 'visible';
-        }
-      }
-    }
     set({ gameState: gs });
   },
 
@@ -642,14 +643,19 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const hero = findHero(gameState, heroId);
     if (!hero || !hero.alive) return;
     set({
-      cameraConfig: {
-        target: new THREE.Vector3(hero.position.q, 0, hero.position.r),
-        angle: get().cameraConfig?.angle ?? Math.PI / 4,
-        zoom: 120,
-      },
+      ...makeCameraConfig(new THREE.Vector3(hero.position.q, 0, hero.position.r), get().cameraConfig?.angle ?? Math.PI / 4, 120),
     });
   },
 }));
+
+// Helper to create camera config with auto-incrementing version
+let _cameraVersion = 0;
+function makeCameraConfig(target: THREE.Vector3, angle: number, zoom: number): { cameraConfig: CameraConfig; cameraConfigVersion: number } {
+  return {
+    cameraConfig: { target: target.clone(), angle, zoom },
+    cameraConfigVersion: ++_cameraVersion,
+  };
+}
 
 function getPlayerMidpoint(gs: GameState, playerId: string): THREE.Vector3 {
   const player = gs.players[playerId];

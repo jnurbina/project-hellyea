@@ -71,7 +71,7 @@ export default function GameHUD() {
             {activePlayer.heroes.map(hero => {
               const q = queuedActions[hero.id];
               const isSelected = selectedHeroId === hero.id;
-              const hasQueue = !!(q?.moveDest || q?.attackTargetId);
+              const hasQueue = !!(q?.moveDest || q?.attackTargetTile);
               return (
                 <div
                   key={hero.id}
@@ -229,7 +229,7 @@ function HeroInfoPanel({ hero, queued, isPlanning }: { hero: Hero; queued?: Queu
       {isPlanning && queued && (
         <div className="border-t border-gray-800 pt-2 mt-1 text-[10px]">
           {queued.moveDest && <div className="text-green-400">⬡ Move queued → ({queued.moveDest.q}, {queued.moveDest.r})</div>}
-          {queued.attackTargetId && <div className="text-red-400">⚔ Attack queued</div>}
+          {queued.attackTargetTile && <div className="text-red-400">⚔ Attack queued</div>}
         </div>
       )}
 
