@@ -3,6 +3,9 @@
 import { useEffect, useMemo } from 'react';
 import { useGameStore, QueuedAction, ActionMode } from '@/lib/game-store';
 import { Hero } from '@/lib/types';
+import TileInfoPanel from './TileInfoPanel';
+import InventoryPanel from './InventoryPanel';
+import Minimap from './Minimap';
 
 export default function GameHUD() {
   const gameState = useGameStore(s => s.gameState);
@@ -15,9 +18,10 @@ export default function GameHUD() {
   const targetHeroId = useGameStore(s => s.targetHeroId);
   const pendingTarget = useGameStore(s => s.pendingTarget);
   const showEndTurnConfirm = useGameStore(s => s.showEndTurnConfirm);
+  const showInventoryPanel = useGameStore(s => s.showInventoryPanel);
   const resolutionOrder = useGameStore(s => s.resolutionOrder);
   const resolutionIndex = useGameStore(s => s.resolutionIndex);
-  const moveAnimation = useGameStore(s => s.moveAnimation); // For disabling buttons during animation
+  const moveAnimation = useGameStore(s => s.moveAnimation);
 
   const selectHero = useGameStore(s => s.selectHero);
   const setActionMode = useGameStore(s => s.setActionMode);
@@ -25,6 +29,7 @@ export default function GameHUD() {
   const confirmEndTurn = useGameStore(s => s.confirmEndTurn);
   const cancelEndTurn = useGameStore(s => s.cancelEndTurn);
   const focusHero = useGameStore(s => s.focusHero);
+  const toggleInventory = useGameStore(s => s.toggleInventory);
 
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
@@ -57,6 +62,9 @@ export default function GameHUD() {
 
   return (
     <div className="absolute inset-0 pointer-events-none font-mono select-none">
+      {showInventoryPanel && selectedHero && (
+        <InventoryPanel hero={selectedHero} />
+      )}
       {/* ── Top bar ── */}
       <div className="absolute top-0 left-0 right-0 p-3 flex items-start gap-3">
         <div className="pointer-events-auto bg-black/80 border border-cyan-900/50 rounded px-3 py-2 text-xs shrink-0">
@@ -69,8 +77,8 @@ export default function GameHUD() {
         {/* Hero roster */}
         <div className="pointer-events-auto bg-black/80 border border-gray-700 rounded px-3 py-2 flex gap-1.5 overflow-x-auto">
           {allHeroes
-            .filter(h => h.alive) // Only show alive heroes in roster
-            .sort((a, b) => b.stats.spd - a.stats.spd) // Sort by speed for initiative display
+            .filter(h => h.alive)
+            .sort((a, b) => b.stats.spd - a.stats.spd)
             .map(hero => {
               const q = queuedActions[hero.id];
               const isSelected = selectedHeroId === hero.id;
@@ -94,6 +102,18 @@ export default function GameHUD() {
               );
             })}
         </div>
+        
+        {/* End Turn Button */}
+        {phase === 'planning' && (
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 pointer-events-auto">
+            <button
+              onClick={requestEndTurn}
+              className="bg-cyan-900/40 hover:bg-cyan-800/50 border border-cyan-500/40 rounded px-6 py-2.5 text-sm text-cyan-400 font-bold uppercase tracking-wider transition-colors"
+            >
+              End Planning <span className="text-gray-500 text-[10px]">[SPACE]</span>
+            </button>
+          </div>
+        )}
 
         {/* Resources */}
         <div className="pointer-events-auto bg-black/80 border border-cyan-900/50 rounded px-3 py-2 text-xs flex gap-3 ml-auto shrink-0">
@@ -113,6 +133,7 @@ export default function GameHUD() {
             actionMode={actionMode}
             setActionMode={setActionMode}
             isAnimating={!!moveAnimation}
+            toggleInventory={toggleInventory}
           />
         </div>
       ) : null}
@@ -124,23 +145,17 @@ export default function GameHUD() {
         </div>
       )}
 
-      {/* ── Bottom Center: End Planning Button / Resolution Overlay ── */}
-      {phase === 'planning' ? (
-        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 pointer-events-auto">
-          <button
-            onClick={requestEndTurn}
-            className="bg-cyan-900/40 hover:bg-cyan-800/50 border border-cyan-500/40 rounded px-6 py-2.5 text-sm text-cyan-400 font-bold uppercase tracking-wider transition-colors"
-          >
-            End Planning <span className="text-gray-500 text-[10px]">[SPACE]</span>
-          </button>
-        </div>
-      ) : (
-        <div className="absolute bottom-4 left-1/2 -translate-x-1/2">
-          <div className="bg-yellow-900/30 border border-yellow-500/30 rounded px-6 py-2 text-yellow-400 text-sm font-bold uppercase tracking-wider animate-pulse">
-            ⚔ RESOLVING ACTIONS...
-          </div>
+      {/* Tile Info Panel */}
+      {selectedHero && (
+        <div className="absolute bottom-4 left-80 pointer-events-auto">
+          <TileInfoPanel hero={selectedHero} />
         </div>
       )}
+
+      {/* Minimap */}
+      <div className="absolute bottom-4 left-1/2 -translate-x-1/2 pointer-events-auto">
+        <Minimap />
+      </div>
 
       {/* Action mode indicator */}
       {actionMode !== 'idle' && phase === 'planning' && (
@@ -148,7 +163,7 @@ export default function GameHUD() {
           <div className={`px-4 py-1.5 rounded text-xs font-bold uppercase tracking-wider ${
             actionMode === 'move' ? 'bg-green-900/60 border border-green-500/50 text-green-400' :
             actionMode === 'attack' ? 'bg-red-900/60 border border-red-500/50 text-red-400' :
-            'bg-yellow-900/60 border border-yellow-500/50 text-yellow-400' // gather
+            'bg-yellow-900/60 border border-yellow-500/50 text-yellow-400'
           }`}>
             {actionMode === 'move' ? '⬡ SELECT MOVE TARGET' :
             actionMode === 'attack' ? '⚔ SELECT ATTACK TARGET' :
@@ -180,19 +195,15 @@ export default function GameHUD() {
   );
 }
 
-// === Hero Info Panel (Bottom Left) ===
-
 function HeroInfoPanel({
-  hero, queued, isPlanning, actionMode, setActionMode, isAnimating,
+  hero, queued, isPlanning, actionMode, setActionMode, isAnimating, toggleInventory
 }: {
-  hero: Hero; queued?: QueuedAction; isPlanning: boolean; actionMode: ActionMode; setActionMode: (m: ActionMode) => void; isAnimating: boolean;
+  hero: Hero; queued?: QueuedAction; isPlanning: boolean; actionMode: ActionMode; setActionMode: (m: ActionMode) => void; isAnimating: boolean; toggleInventory: (heroId: string) => void;
 }) {
   const color = hero.owner === 'player1' ? '#00ccff' : '#ff4444';
   const hasQueuedMove = !!queued?.moveDest;
   const hasQueuedAttack = !!queued?.attackTargetTile;
   const hasQueuedGather = !!queued?.gatherTile;
-
-  // Check if hero is on a resource tile with resources
   const gameState = useGameStore(s => s.gameState);
   const tile = gameState ? gameState.grid[hero.position.r]?.[hero.position.q] : null;
   const canGather = !!(tile?.resourceType && (tile.resourceAmount ?? 0) > 0);
@@ -204,7 +215,10 @@ function HeroInfoPanel({
           <div className="font-bold uppercase" style={{ color }}>{hero.name}</div>
           <div className="text-gray-500 text-[10px] italic">{hero.lore}</div>
         </div>
-        <div className="text-[10px] text-gray-500 uppercase">{hero.archetype}</div>
+        <div className="flex items-center">
+          <button onClick={() => toggleInventory(hero.id)} className="mr-2 text-xl">🎒</button>
+          <div className="text-[10px] text-gray-500 uppercase">{hero.archetype}</div>
+        </div>
       </div>
 
       <div className="mb-3">
@@ -228,10 +242,8 @@ function HeroInfoPanel({
         <Stat label="SPD" value={hero.stats.spd} />
       </div>
 
-      {/* Queued actions display (or action buttons if planning) */}
       {isPlanning && !isAnimating && (
         <div className="flex gap-2 border-t border-gray-800 pt-2 mt-2">
-          {/* Move Button */}
           <button
             disabled={hasQueuedMove}
             onClick={() => setActionMode(actionMode === 'move' ? 'idle' : 'move')}
@@ -243,7 +255,6 @@ function HeroInfoPanel({
           >
             {hasQueuedMove ? '✓ Move' : '⬡ Move'}
           </button>
-          {/* Attack Button */}
           <button
             disabled={hasQueuedAttack}
             onClick={() => setActionMode(actionMode === 'attack' ? 'idle' : 'attack')}
@@ -255,7 +266,6 @@ function HeroInfoPanel({
           >
             {hasQueuedAttack ? '✓ Attack' : '⚔ Attack'}
           </button>
-          {/* Gather Button */}
           {canGather && (
             <button
               disabled={hasQueuedGather}
@@ -271,19 +281,9 @@ function HeroInfoPanel({
           )}
         </div>
       )}
-
-      {isPlanning && isAnimating && (
-        <div className="border-t border-gray-800 pt-2 mt-2 text-[10px] text-gray-500 animate-pulse">Hero is moving...</div>
-      )}
-
-      {!isPlanning && (
-        <div className="border-t border-gray-800 pt-2 mt-2 text-[10px] text-gray-500">Awaiting resolution...</div>
-      )}
     </div>
   );
 }
-
-// === Target Panel (Bottom Right) ===
 
 function TargetPanel({ hero, attacker, isPending }: { hero: Hero; attacker: Hero; isPending: boolean }) {
   const damage = Math.max(1, attacker.stats.atk - hero.stats.def);
@@ -292,7 +292,6 @@ function TargetPanel({ hero, attacker, isPending }: { hero: Hero; attacker: Hero
   return (
     <div className="bg-black/85 border border-red-900/50 rounded-lg px-4 py-3 min-w-[220px]">
       <div className="text-red-400 font-bold uppercase mb-2">{hero.name} <span className="text-gray-500 text-[10px] normal-case">({hero.owner})</span></div>
-
       <div className="mb-2">
         <div className="flex justify-between text-[10px] mb-0.5">
           <span className="text-gray-500">HP</span>
@@ -306,22 +305,19 @@ function TargetPanel({ hero, attacker, isPending }: { hero: Hero; attacker: Hero
           }} />
         </div>
       </div>
-
       <div className="flex gap-3 text-[10px] mb-2">
         <Stat label="ATK" value={hero.stats.atk} />
         <Stat label="DEF" value={hero.stats.def} />
         <Stat label="SPD" value={hero.stats.spd} />
       </div>
-
       <div className="text-[10px] text-orange-400 font-bold">
         ⚔ {damage} damage {hpAfter === 0 && <span className="text-red-500">— LETHAL</span>}
       </div>
-
       {isPending && <div className="mt-2 text-[10px] text-white animate-pulse">Double-click to confirm attack</div>}
     </div>
   );
 }
 
-const Stat = ({ label, value }: { label: string; value: number }) => (
+const Stat = ({ label, value }: { label: string; value: number | string }) => (
   <div><span className="text-gray-500">{label} </span><span className="text-white">{value}</span></div>
 );

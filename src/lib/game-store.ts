@@ -203,6 +203,7 @@ interface GameStore {
   pendingTarget: { q: number; r: number } | null;
   targetHeroId: string | null;
   showEndTurnConfirm: boolean;
+  showInventoryPanel: boolean; // New: state for inventory modal
 
   // Camera & animation
   cameraConfig: CameraConfig | null;
@@ -222,6 +223,7 @@ interface GameStore {
   requestEndTurn: () => void;
   confirmEndTurn: () => void;
   cancelEndTurn: () => void;
+  toggleInventory: (heroId: string) => void; // New: action to open/close inventory
   tickMoveAnimation: (delta: number) => boolean;
   processNextResolution: () => void;
   executeAttackTile: (attackerId: string, targetTile: { q: number; r: number }) => void;
@@ -257,6 +259,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
   pendingTarget: null,
   targetHeroId: null,
   showEndTurnConfirm: false,
+  showInventoryPanel: false,
   cameraConfig: null,
   cameraConfigVersion: 0,
   moveAnimation: null,
@@ -269,7 +272,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const makeHero = (template: typeof DEFAULT_HEROES[0], id: string, owner: string, q: number, r: number): Hero => ({
       id, name: template.name, lore: template.lore, archetype: template.archetype, stats: { ...template.stats },
       position: { q, r }, alive: true, respawnTimer: 0, hasMoved: false, hasAttacked: false,
-      inventory: [null, null, null, null, null, null], owner,
+      inventory: { head: null, body: null, hands: null, feet: null, resourcePouch: null, accessory: null }, owner,
     });
 
     const players: Record<string, Player> = {
@@ -307,6 +310,17 @@ export const useGameStore = create<GameStore>((set, get) => ({
     });
 
     get().updateVisibility();
+  },
+
+  toggleInventory: (heroId) => {
+    const { selectedHeroId, showInventoryPanel } = get();
+    // If inventory is open for the selected hero, close it.
+    // Otherwise, open it for the given hero (and select that hero if not already).
+    if (showInventoryPanel && selectedHeroId === heroId) {
+      set({ showInventoryPanel: false });
+    } else {
+      set({ showInventoryPanel: true, selectedHeroId: heroId });
+    }
   },
 
   selectHero: (heroId) => {

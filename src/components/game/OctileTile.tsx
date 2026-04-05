@@ -9,7 +9,7 @@ import { useGameStore } from '@/lib/game-store';
 
 const TILE_SIZE = 0.46;
 const TILE_DEPTH = 0.08;
-const WALL_COLOR = '#2a2050'; // blue-purple cliff walls
+const WALL_COLOR = '#4a3a8a'; // A brighter, more vibrant blue-purple
 
 const octGeo = createOctagonGeometry(TILE_SIZE, TILE_DEPTH);
 const octEdgePoints = getOctagonEdgePoints(TILE_SIZE);

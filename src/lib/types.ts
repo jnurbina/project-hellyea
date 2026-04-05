@@ -32,11 +32,32 @@ export interface Hero {
   stats: HeroStats;
   position: { q: number; r: number };
   alive: boolean;
-  respawnTimer: number; // 0 = alive, >0 = respawning
+  respawnTimer: number;
   hasMoved: boolean;
   hasAttacked: boolean;
-  inventory: (Card | null)[];
-  owner: string; // player id
+  inventory: Inventory; // Changed from (Card | null)[] to Inventory
+  owner: string;
+}
+
+export type ItemType = 'head' | 'body' | 'hands' | 'feet' | 'resourcePouch' | 'accessory';
+
+export interface Item {
+  id: string;
+  name: string;
+  type: ItemType;
+  resourceType?: Exclude<Tile['resourceType'], undefined>; // What resource it holds if resourcePouch
+  resourceAmount?: number; // Current amount in pouch
+  maxResourceAmount?: number; // Max capacity of resourcePouch
+  // Add other item properties like stat boosts, effects, etc. later
+}
+
+export interface Inventory {
+  head: Item | null;
+  body: Item | null;
+  hands: Item | null;
+  feet: Item | null;
+  resourcePouch: Item | null; // Holds 5 of one resource type
+  accessory: Item | null;
 }
 
 export interface Card {

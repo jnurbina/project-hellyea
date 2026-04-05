@@ -38,7 +38,7 @@ function CameraController() {
 
   useEffect(() => {
     (window as any).__cameraDragDist = dragDistRef;
-    (window as any).__cameraDebug = { targetRef, angleRef, zoomRef, distanceRef };
+    (window as any).__cameraDebug = { targetRef, angleRef, zoomRef, distanceRef, orthoLeft: ortho.left, orthoRight: ortho.right, orthoTop: ortho.top, orthoBottom: ortho.bottom };
   }, []);
 
   useEffect(() => {
