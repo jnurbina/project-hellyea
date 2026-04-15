@@ -44,15 +44,15 @@ export function generateGrid(width: number, height: number, seed = 42): Tile[][]
       let resourceAmount: Tile['resourceAmount'] = undefined;
       if (terrain === 'forest' && random() > 0.5) {
         resourceType = 'wood';
-        resourceAmount = Math.floor(random() * 5) + 1;
+        resourceAmount = Math.floor(random() * 6) + 5; // 5-10
       }
       if (terrain === 'mountain' && random() > 0.6) {
         resourceType = random() > 0.7 ? 'iron' : 'stone';
-        resourceAmount = Math.floor(random() * 4) + 1;
+        resourceAmount = Math.floor(random() * 6) + 5; // 5-10
       }
       if (terrain === 'plains' && random() > 0.7) {
-        resourceType = 'food';
-        resourceAmount = Math.floor(random() * 6) + 2;
+        resourceType = random() > 0.5 ? 'food' : 'water'; // 50/50 food or water spring
+        resourceAmount = Math.floor(random() * 6) + 5; // 5-10
       }
       
       row.push({
@@ -70,8 +70,43 @@ export function generateGrid(width: number, height: number, seed = 42): Tile[][]
   // Ensure spawn corners are plains
   ensureSpawnArea(grid, 1, 1, 3);
   ensureSpawnArea(grid, width - 2, height - 2, 3);
-  
+
+  // Add wood/stone near starting points for early TC building
+  addStartingResources(grid, 1, 1, width, height);
+  addStartingResources(grid, width - 2, height - 2, width, height);
+
   return grid;
+}
+
+function addStartingResources(grid: Tile[][], centerQ: number, centerR: number, width: number, height: number) {
+  // Guarantee 1 of each resource type within 2 tiles of spawn center
+  const resourceTypes: ('wood' | 'stone' | 'food' | 'water')[] = ['wood', 'stone', 'food', 'water'];
+
+  // Collect valid positions within radius 2
+  const candidates: { q: number; r: number }[] = [];
+  for (let dr = -2; dr <= 2; dr++) {
+    for (let dq = -2; dq <= 2; dq++) {
+      if (dr === 0 && dq === 0) continue; // skip center
+      const q = centerQ + dq;
+      const r = centerR + dr;
+      if (r >= 0 && r < height && q >= 0 && q < width) {
+        const tile = grid[r][q];
+        if (tile.terrain === 'plains' && !tile.resourceType) {
+          candidates.push({ q, r });
+        }
+      }
+    }
+  }
+
+  // Place one of each resource type
+  for (const type of resourceTypes) {
+    if (candidates.length === 0) break;
+    const idx = Math.floor(Math.random() * candidates.length);
+    const pos = candidates.splice(idx, 1)[0];
+    const tile = grid[pos.r][pos.q];
+    tile.resourceType = type;
+    tile.resourceAmount = 6;
+  }
 }
 
 function ensureSpawnArea(grid: Tile[][], centerQ: number, centerR: number, radius: number) {
@@ -157,17 +192,24 @@ export function findPath(
       const nq = current.q + dir.dq;
       const nr = current.r + dir.dr;
       const nKey = key(nq, nr);
-      
+
       if (closed.has(nKey)) continue;
       if (nr < 0 || nr >= grid.length || nq < 0 || nq >= grid[0].length) continue;
-      
+
       const tile = grid[nr][nq];
+      const currentTile = grid[current.r][current.q];
       const moveCost = TERRAIN_CONFIG[tile.terrain].moveCost;
       if (moveCost >= 99) continue; // impassable
       if (occupied?.has(nKey)) continue; // tile occupied by another unit
-      
+
       const isDiagonal = dir.dq !== 0 && dir.dr !== 0;
-      const stepCost = moveCost * (isDiagonal ? 1.414 : 1);
+      let stepCost = moveCost * (isDiagonal ? 1.414 : 1);
+
+      // Mountain ascension cost: +2 when moving FROM non-mountain TO mountain
+      if (tile.terrain === 'mountain' && currentTile.terrain !== 'mountain') {
+        stepCost += 2;
+      }
+
       const tentativeG = (gScore.get(currentKey) || 0) + stepCost;
       
       if (tentativeG > maxCost) continue;
@@ -191,6 +233,11 @@ export function octileDistance(q1: number, r1: number, q2: number, r2: number): 
   const dx = Math.abs(q1 - q2);
   const dy = Math.abs(r1 - r2);
   return Math.max(dx, dy) + (Math.SQRT2 - 1) * Math.min(dx, dy);
+}
+
+// Chebyshev distance: diagonal tiles count as 1 (for attack range checks)
+export function chebyshevDistance(q1: number, r1: number, q2: number, r2: number): number {
+  return Math.max(Math.abs(q1 - q2), Math.abs(r1 - r2));
 }
 
 /**
@@ -230,8 +277,8 @@ export function calculateVisibility(grid: Tile[][], q: number, r: number, range:
 
 function bresenhamLine(q1: number, r1: number, q2: number, r2: number): { q: number; r: number }[] {
   const points: { q: number; r: number }[] = [];
-  let dq = Math.abs(q2 - q1);
-  let dr = Math.abs(r2 - r1);
+  const dq = Math.abs(q2 - q1);
+  const dr = Math.abs(r2 - r1);
   let q = q1, r = r1;
   const sq = q1 < q2 ? 1 : -1;
   const sr = r1 < r2 ? 1 : -1;

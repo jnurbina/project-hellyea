@@ -33,6 +33,7 @@ interface OctileTileProps {
   isEnemy: boolean;
   isMoveRange: boolean;
   isAttackRange: boolean;
+  isPlacementTile: boolean;
   isPending: boolean;
   hasQueuedMove: boolean;
   onClick: () => void;
@@ -42,16 +43,25 @@ interface OctileTileProps {
 
 export default function OctileTileMesh({
   tile, isHighlighted, isPath, isSelected, hasHero, heroColor, isEnemy,
-  isMoveRange, isAttackRange, isPending, hasQueuedMove,
+  isMoveRange, isAttackRange, isPlacementTile, isPending, hasQueuedMove,
   onClick, onPointerEnter, onPointerLeave,
 }: OctileTileProps) {
   const gameState = useGameStore(s => s.gameState);
-  const allHeroes = useMemo(() => 
+  const allHeroes = useMemo(() =>
     gameState ? Object.values(gameState.players).flatMap(p => [...p.heroes]) : [],
     [gameState]
   );
   const heroOnTileData = useMemo(() => {
-    const hero = allHeroes.find(h => h.position.q === tile.q && h.position.r === tile.r);
+    // Only look up hero data if hasHero prop indicates one should be shown
+    // This respects the filtering done in GameBoard (e.g., excluding animated heroes)
+    if (!hasHero) return null;
+    const hero = allHeroes.find(h => h.position.q === tile.q && h.position.r === tile.r && h.alive);
+    return hero;
+  }, [allHeroes, tile.q, tile.r, hasHero]);
+
+  // Separate lookup for dead heroes (to show skull indicator)
+  const deadHeroOnTile = useMemo(() => {
+    const hero = allHeroes.find(h => h.position.q === tile.q && h.position.r === tile.r && !h.alive);
     return hero;
   }, [allHeroes, tile.q, tile.r]);
 
@@ -71,23 +81,24 @@ export default function OctileTileMesh({
 
   const edgeColor = useMemo(() => {
     if (tile.visible === 'unexplored') return '#0e0f12';
-    if (isPending) return isAttackRange ? '#ff6666' : '#66ff88';
+    if (isPending) return isAttackRange ? '#ff6666' : isPlacementTile ? '#ffaa44' : '#66ff88';
     if (isSelected) return '#00ddff';
     if (isPath) return '#44cc66';
     if (isMoveRange) return '#33aa55';
     if (isAttackRange) return '#cc4444';
+    if (isPlacementTile) return '#cc8833';
     if (isHighlighted) return isEnemy ? '#aa4444' : '#4499bb';
     if (hasQueuedMove) return '#44aa66';
     if (tile.visible === 'explored') return '#22242a';
     return '#4a5868';
-  }, [tile.visible, isHighlighted, isPath, isSelected, isEnemy, isMoveRange, isAttackRange, isPending, hasQueuedMove]);
+  }, [tile.visible, isHighlighted, isPath, isSelected, isEnemy, isMoveRange, isAttackRange, isPlacementTile, isPending, hasQueuedMove]);
 
   const edgeOpacity = useMemo(() => {
     if (tile.visible === 'unexplored') return 0.15;
-    if (isMoveRange || isAttackRange) return 0.85;
+    if (isMoveRange || isAttackRange || isPlacementTile) return 0.85;
     if (isPending) return 1;
     return 0.6;
-  }, [tile.visible, isMoveRange, isAttackRange, isPending]);
+  }, [tile.visible, isMoveRange, isAttackRange, isPlacementTile, isPending]);
 
   const elevation = tile.visible === 'unexplored' ? 0 : tile.elevation;
   const showWall = elevation > 0.05;
@@ -130,9 +141,9 @@ export default function OctileTileMesh({
         <ResourceIndicator type={tile.resourceType} amount={tile.resourceAmount} />
       )}
 
-      {/* Hero. Only render if alive, otherwise show skull. */}
-      {heroOnTileData && heroOnTileData.alive && <HeroIndicator color={heroColor || '#ffffff'} />}
-      {heroOnTileData && !heroOnTileData.alive && tile.visible !== 'unexplored' && <DeadHeroIndicator />}
+      {/* Hero. Only render if alive (and hasHero prop is true), otherwise show skull for dead heroes. */}
+      {heroOnTileData && <HeroIndicator color={heroColor || '#ffffff'} />}
+      {deadHeroOnTile && tile.visible !== 'unexplored' && <DeadHeroIndicator />}
     </group>
   );
 }

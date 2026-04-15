@@ -1,22 +1,72 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import { useGameStore } from '@/lib/game-store';
 import GameHUD from '@/components/game/GameHUD';
 
 // Dynamic import to avoid SSR issues with Three.js
-const GameBoard = dynamic(() => import('@/components/game/GameBoard'), { ssr: false });
+const GameBoard = dynamic(() => import('@/components/game/GameBoard'), {
+  ssr: false,
+  loading: () => <div className="w-full h-full bg-[#1e2024]" />
+});
+
+// Global audio functions for SFX (accessible from other components)
+let playSfxSelect: () => void = () => {};
+let playSfxBlur: () => void = () => {};
+export const playSelectSound = () => playSfxSelect();
+export const playBlurSound = () => playSfxBlur();
 
 export default function Home() {
   const [started, setStarted] = useState(false);
+  const [mounted, setMounted] = useState(false);
   const initGame = useGameStore(s => s.initGame);
   const gameState = useGameStore(s => s.gameState);
 
-  const handleStart = () => {
-    initGame(20, 20);
+  // Audio refs
+  const bgmRef = useRef<HTMLAudioElement | null>(null);
+  const sfxSelectRef = useRef<HTMLAudioElement | null>(null);
+  const sfxBlurRef = useRef<HTMLAudioElement | null>(null);
+
+  // Wait for client mount before rendering Canvas
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  // Set up global SFX functions
+  useEffect(() => {
+    playSfxSelect = () => {
+      if (sfxSelectRef.current) {
+        sfxSelectRef.current.currentTime = 0;
+        sfxSelectRef.current.play().catch(() => {});
+      }
+    };
+    playSfxBlur = () => {
+      if (sfxBlurRef.current) {
+        sfxBlurRef.current.currentTime = 0;
+        sfxBlurRef.current.play().catch(() => {});
+      }
+    };
+  }, []);
+
+  const handleStart = useCallback(() => {
+    // Play select sound
+    if (sfxSelectRef.current) {
+      sfxSelectRef.current.currentTime = 0;
+      sfxSelectRef.current.play().catch(() => {});
+    }
+    // Start BGM
+    if (bgmRef.current) {
+      bgmRef.current.volume = 0.3;
+      bgmRef.current.play().catch(() => {});
+    }
+    initGame(16, 16);
     setStarted(true);
-  };
+  }, [initGame]);
+
+  if (!mounted) {
+    return <div className="h-screen w-screen bg-black" />;
+  }
 
   if (!started || !gameState) {
     return (
@@ -32,7 +82,7 @@ export default function Home() {
           >
             Start Game
           </button>
-          <p className="text-gray-600 text-[10px] mt-4 font-mono">20×20 • 4 Heroes • Hero Initiative • Pass &amp; Play</p>
+          <p className="text-gray-600 text-[10px] mt-4 font-mono">16×16 • 4 Heroes • Hero Initiative • Pass &amp; Play</p>
         </div>
       </div>
     );
@@ -40,6 +90,11 @@ export default function Home() {
 
   return (
     <div className="h-screen w-screen bg-black relative overflow-hidden">
+      {/* Audio elements */}
+      <audio ref={bgmRef} src="/bgm.mp3" loop preload="auto" />
+      <audio ref={sfxSelectRef} src="/sfxInputSelect.mp3" preload="auto" />
+      <audio ref={sfxBlurRef} src="/sfxInputBlur.mp3" preload="auto" />
+
       <GameBoard />
       <GameHUD />
     </div>
