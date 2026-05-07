@@ -1067,9 +1067,10 @@ function UnitInfoPanel({
   // Show gather button if tile is gatherable OR if gather is already queued (to show checkmark)
   const showGatherButton = canGatherTile || hasQueuedGather;
 
-  // Check if adjacent to own TC for deposit
+  // Check if adjacent to own TC for deposit (deposit and gather are mutually exclusive)
   const ownTC = gameState ? Object.values(gameState.players).flatMap(p => p.buildings).find(b => b.type === 'town_center' && b.owner === unit.owner) : null;
   const isAdjacentToTC = ownTC && Math.abs(unit.position.q - ownTC.position.q) <= 1 && Math.abs(unit.position.r - ownTC.position.r) <= 1;
+  // Deposit consumes the turn - no move allowed with deposit; gather and deposit are mutually exclusive
   const canDeposit = isAdjacentToTC && pouchAmount > 0 && !hasQueuedDeposit && !hasQueuedMove && !hasQueuedGather;
 
   const depositLocksAll = hasQueuedDeposit;

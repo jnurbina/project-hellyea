@@ -30,22 +30,14 @@ export default function Minimap() {
       const viewportHeight = canvas?.clientHeight || window.innerHeight;
       const aspectRatio = viewportWidth / viewportHeight;
 
-      // Orthographic camera frustum: left=-10, right=10, top=10, bottom=-10
-      // At zoom=1, visible area is 20x20 units. At zoom=120, it's 20/120 = 0.167 units
-      const orthoSize = 20; // Total ortho frustum size (left=-10 to right=10)
+      // Simple calibrated formula: at zoom=66 (min zoom), entire map is visible
+      // Visible area scales inversely with zoom
+      const minZoom = 66;
+      const zoomScale = minZoom / zoom; // 1.0 at zoom=66, 0.33 at zoom=200
 
-      // Calculate visible world units based on zoom
-      // The orthographic camera scales by zoom, so visible = frustum / zoom
-      const baseVisibleHeight = orthoSize / zoom;
-      const baseVisibleWidth = baseVisibleHeight * aspectRatio;
-
-      // Scale factor to convert from camera units to world units on ground plane
-      // The camera is at elevation 12 looking down at an angle, which affects projection
-      // This factor accounts for the oblique view (camera is not directly overhead)
-      const projectionScale = 12; // Empirical adjustment for the camera's viewing angle
-
-      const visibleWidth = baseVisibleWidth * projectionScale;
-      const visibleHeight = baseVisibleHeight * projectionScale;
+      // At minimum zoom, visible area equals map size (adjusted for aspect ratio)
+      const visibleHeight = mapHeight * zoomScale;
+      const visibleWidth = visibleHeight * aspectRatio;
 
       // Center position as percentage
       const centerX = (target.x / mapWidth) * 100;
@@ -98,6 +90,7 @@ export default function Minimap() {
   const { mapWidth, mapHeight } = gameState;
 
   const allHeroes = Object.values(gameState.players).flatMap(p => [...p.heroes]);
+  const allBuildings = Object.values(gameState.players).flatMap(p => [...p.buildings]);
 
   return (
     <div
@@ -131,6 +124,25 @@ export default function Minimap() {
           </div>
         ))}
       </div>
+
+      {/* Town Centers */}
+      {allBuildings.map(building => {
+        if (building.type !== 'town_center') return null;
+        const isOwned = building.owner === planningPlayerId;
+        return (
+          <div
+            key={building.id}
+            className="absolute w-3 h-3 border-2"
+            style={{
+              left: `${(building.position.q / mapWidth) * 100}%`,
+              top: `${(building.position.r / mapHeight) * 100}%`,
+              borderColor: isOwned ? '#00ffff' : '#ff4444',
+              backgroundColor: isOwned ? 'rgba(0,255,255,0.3)' : 'rgba(255,68,68,0.3)',
+              transform: 'translate(-50%, -50%)',
+            }}
+          />
+        );
+      })}
 
       {/* Heroes */}
       {allHeroes.map(hero => {

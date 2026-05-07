@@ -188,11 +188,12 @@ function ActionToolbar({ heroId }: { heroId: string }) {
   const hasQueuedMove = !!queued?.moveDest;
   const hasQueuedAttack = !!queued?.attackTargetTile;
   const hasQueuedGather = !!queued?.gatherTile;
+  const hasQueuedDeposit = !!queued?.depositTile;
   const hasBuiltTC = !!queued?.builtTC;
 
-  // Gather locks out move/attack, move/attack lock out gather, building TC locks out all
-  const gatherLocksActions = hasQueuedGather || hasBuiltTC;
-  const actionsLockGather = hasQueuedMove || hasQueuedAttack || hasBuiltTC;
+  // Gather/Deposit lock out move/attack, move/attack lock out gather, building TC locks out all
+  const gatherLocksActions = hasQueuedGather || hasBuiltTC || hasQueuedDeposit;
+  const actionsLockGather = hasQueuedMove || hasQueuedAttack || hasBuiltTC || hasQueuedDeposit;
 
   // Check if hero is on a resource tile with resources
   const tile = gameState ? gameState.grid[hero.position.r]?.[hero.position.q] : null;
@@ -204,15 +205,16 @@ function ActionToolbar({ heroId }: { heroId: string }) {
   const hasSpace = currentPouchTotal < 5;
   const canGather = !!(tile?.resourceType && (tile.resourceAmount ?? 0) > 0) && hasSpace && !actionsLockGather;
 
-  // If gather is queued or TC was built, show action used indicator
-  if (hasQueuedGather || hasBuiltTC) {
-    const indicatorColor = hasBuiltTC ? 'amber' : 'yellow';
+  // If gather, deposit, or TC was built, show action used indicator
+  if (hasQueuedGather || hasQueuedDeposit || hasBuiltTC) {
+    const indicatorColor = hasBuiltTC ? 'amber' : hasQueuedDeposit ? 'purple' : 'yellow';
+    const indicatorIcon = hasBuiltTC ? '🏰' : hasQueuedDeposit ? '📦' : '✓';
     return (
       <group position={[hero.position.q + 0.55, 0.5, hero.position.r]}>
         <Html center zIndexRange={[0, 0]} style={{ pointerEvents: 'auto' }}>
           <div style={{ zIndex: -1, position: 'relative' }} className="flex flex-col gap-1 animate-in fade-in slide-in-from-left-2 duration-200">
             <div className={`w-7 h-7 rounded bg-${indicatorColor}-900/30 border border-${indicatorColor}-800/40 flex items-center justify-center text-[10px] text-${indicatorColor}-600`}>
-              {hasBuiltTC ? '🏰' : '✓'}
+              {indicatorIcon}
             </div>
           </div>
         </Html>

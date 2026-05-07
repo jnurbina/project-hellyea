@@ -43,6 +43,19 @@ function getOccupiedTiles(gs: GameState, excludeId?: string): Set<string> {
   return occupied;
 }
 
+// Get occupied tiles including queued move destinations (prevents units landing on same tile)
+function getOccupiedTilesWithQueued(gs: GameState, queuedActions: Record<string, QueuedAction>, excludeId?: string): Set<string> {
+  const occupied = getOccupiedTiles(gs, excludeId);
+  // Add all queued move destinations
+  for (const [unitId, action] of Object.entries(queuedActions)) {
+    if (unitId === excludeId) continue;
+    if (action.moveDest) {
+      occupied.add(`${action.moveDest.q},${action.moveDest.r}`);
+    }
+  }
+  return occupied;
+}
+
 function getAllHeroes(gs: GameState): Hero[] {
   return Object.values(gs.players).flatMap(p => [...p.heroes]);
 }
@@ -82,9 +95,9 @@ function buildInitiativeOrder(gs: GameState): string[] {
 }
 
 /** Compute all tiles reachable by a hero within their MOV range */
-function computeMoveTiles(gs: GameState, hero: Hero): Set<string> {
+function computeMoveTiles(gs: GameState, hero: Hero, queuedActions?: Record<string, QueuedAction>): Set<string> {
   const reachable = new Set<string>();
-  const occupied = getOccupiedTiles(gs, hero.id);
+  const occupied = queuedActions ? getOccupiedTilesWithQueued(gs, queuedActions, hero.id) : getOccupiedTiles(gs, hero.id);
   const grid = gs.grid;
   const mov = hero.stats.mov;
   const costs = new Map<string, number>();
@@ -149,9 +162,9 @@ function computeAttackTiles(gs: GameState, hero: Hero): Set<string> {
 }
 
 /** Compute all tiles reachable by a unit within their MOV range */
-function computeMoveTilesForUnit(gs: GameState, unit: Unit): Set<string> {
+function computeMoveTilesForUnit(gs: GameState, unit: Unit, queuedActions?: Record<string, QueuedAction>): Set<string> {
   const reachable = new Set<string>();
-  const occupied = getOccupiedTiles(gs, unit.id);
+  const occupied = queuedActions ? getOccupiedTilesWithQueued(gs, queuedActions, unit.id) : getOccupiedTiles(gs, unit.id);
   const grid = gs.grid;
   const mov = unit.stats.mov;
   const costs = new Map<string, number>();
@@ -761,15 +774,17 @@ export const useGameStore = create<GameStore>((set, get) => ({
       const unit = findUnit(gameState, selectedUnitId);
       if (!unit || unit.unitType !== 'farmer') return;
       const queued = queuedActions[selectedUnitId];
-      // Only deposit locks out move (gather-then-move combo is allowed)
+      // Deposit locks out move and gather; gather locks out deposit
       const hasQueuedDeposit = !!queued?.depositTile;
+      const hasQueuedGather = !!queued?.gatherTile;
 
       if (mode === 'move' && !queued?.moveDest && !hasQueuedDeposit) {
-        // Compute move tiles for Farmer
-        const moveTiles = computeMoveTilesForUnit(gameState, unit);
+        // Compute move tiles for Farmer (exclude tiles claimed by other units)
+        const moveTiles = computeMoveTilesForUnit(gameState, unit, queuedActions);
         set({ actionMode: 'move', moveTiles, attackTiles: new Set(), pendingTarget: null });
-      } else if (mode === 'gather') {
+      } else if (mode === 'gather' && !hasQueuedDeposit) {
         // Farmer gather - use move destination if queued, otherwise current position
+        // Blocked if deposit is queued (gather and deposit are mutually exclusive)
         const gatherPos = queued?.moveDest || unit.position;
         // Farmer gather - double press to confirm
         if (get().actionMode === 'gather') {
@@ -822,8 +837,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
     }
 
     if (mode === 'move' && !queued?.moveDest) {
-      // Move is always allowed if not already queued
-      set({ actionMode: 'move', moveTiles: computeMoveTiles(gameState, hero), attackTiles: new Set(), pendingTarget: null, targetHeroId: null });
+      // Move is always allowed if not already queued (exclude tiles claimed by other units)
+      set({ actionMode: 'move', moveTiles: computeMoveTiles(gameState, hero, queuedActions), attackTiles: new Set(), pendingTarget: null, targetHeroId: null });
     } else if (mode === 'attack' && !queued?.attackTargetTile && !hasQueuedGather) {
       // Attack blocked only by gather (not by deposit)
       let attackHero = hero;
@@ -1226,205 +1241,51 @@ export const useGameStore = create<GameStore>((set, get) => ({
       return;
     }
 
-    // Find all enemy targets
+    // Simple scout AI: charge at enemy TC, attack any enemy in range
     const enemies = getEnemyTargets(gs, scout.owner);
-
-    // SHARED AWARENESS: Check if any allied unit (hero, scout, farmer) has vision on enemies
-    const alliedUnits: Array<{ position: { q: number; r: number }; vis: number }> = [];
-    const player = gs.players[scout.owner];
-    for (const hero of player.heroes) {
-      if (hero.alive) alliedUnits.push({ position: hero.position, vis: hero.stats.vis });
-    }
-    for (const unit of player.units) {
-      if (unit.alive) alliedUnits.push({ position: unit.position, vis: unit.stats.vis });
-    }
-
-    // Check for visible enemies - scout's own vision OR allied unit vision (shared awareness)
-    let visibleEnemy: { id: string; position: { q: number; r: number }; dist: number } | null = null;
-    for (const enemy of enemies) {
-      // Check scout's own vision
-      const scoutDist = octileDistance(scout.position.q, scout.position.r, enemy.position.q, enemy.position.r);
-      if (scoutDist <= scout.stats.vis) {
-        if (!visibleEnemy || scoutDist < visibleEnemy.dist) {
-          visibleEnemy = { ...enemy, dist: scoutDist };
-        }
-        continue;
-      }
-      // Check allied unit vision (shared awareness)
-      for (const ally of alliedUnits) {
-        const allyDist = octileDistance(ally.position.q, ally.position.r, enemy.position.q, enemy.position.r);
-        if (allyDist <= ally.vis) {
-          const distFromScout = octileDistance(scout.position.q, scout.position.r, enemy.position.q, enemy.position.r);
-          if (!visibleEnemy || distFromScout < visibleEnemy.dist) {
-            visibleEnemy = { ...enemy, dist: distFromScout };
-          }
-          break;
-        }
-      }
-    }
-
-    // Update LKP (Last Known Position)
-    if (visibleEnemy) {
-      scout.lastKnownPosition = { ...visibleEnemy.position };
-      scout.lkpTurnsRemaining = 3;
-      scout.currentTargetId = visibleEnemy.id;
-    } else if (scout.lkpTurnsRemaining && scout.lkpTurnsRemaining > 0) {
-      scout.lkpTurnsRemaining--;
-      if (scout.lkpTurnsRemaining <= 0) {
-        scout.lastKnownPosition = undefined;
-        scout.currentTargetId = undefined;
-      }
-    }
-
-    // Determine target position
-    let targetPos: { q: number; r: number } | null = null;
-    if (visibleEnemy) {
-      targetPos = visibleEnemy.position;
-    } else if (scout.lastKnownPosition) {
-      targetPos = scout.lastKnownPosition;
-    }
-
-    // Calculate path to target or explore toward enemy zone
     const occupied = getOccupiedTiles(gs, scoutId);
     let movePath: { q: number; r: number }[] = [];
     let attackTarget: { q: number; r: number } | null = null;
 
-    // TACTICAL DECISION MAKING
-    // Calculate survival metrics for combat decisions
-    const calculateSurvival = (attacker: { atk: number; hp: number; def: number }, defender: { atk: number; hp: number; def: number }) => {
-      const damageToDefender = Math.max(1, attacker.atk - defender.def);
-      const damageToAttacker = Math.max(1, defender.atk - attacker.def);
-      const hitsToKill = Math.ceil(defender.hp / damageToDefender);
-      const hitsToDie = Math.ceil(attacker.hp / damageToAttacker);
-      return { hitsToKill, hitsToDie, canWin: hitsToDie > hitsToKill };
-    };
+    // Find enemy TC as primary target
+    const enemyPlayerId = scout.owner === 'player1' ? 'player2' : 'player1';
+    const enemyTC = gs.players[enemyPlayerId]?.buildings.find(b => b.type === 'town_center');
+    const targetPos = enemyTC ? enemyTC.position : { q: enemyPlayerId === 'player1' ? 2 : gs.mapWidth - 3, r: enemyPlayerId === 'player1' ? 2 : gs.mapHeight - 3 };
 
-    // Get enemy stats for survival calculation
-    let enemyStats: { atk: number; hp: number; def: number } | null = null;
-    if (visibleEnemy) {
-      const enemyHero = getAllHeroes(gs).find(h => h.id === visibleEnemy.id && h.alive);
-      const enemyUnit = getAllUnits(gs).find(u => u.id === visibleEnemy.id && u.alive);
-      if (enemyHero) {
-        enemyStats = { atk: enemyHero.stats.atk, hp: enemyHero.stats.hp, def: enemyHero.stats.def };
-      } else if (enemyUnit) {
-        enemyStats = { atk: enemyUnit.stats.atk, hp: enemyUnit.stats.hp, def: enemyUnit.stats.def };
-      }
-    }
-
-    // Count nearby enemies for outnumbered check
-    const nearbyEnemies = enemies.filter(e =>
-      octileDistance(scout.position.q, scout.position.r, e.position.q, e.position.r) <= scout.stats.vis
-    );
-    const isOutnumbered = nearbyEnemies.length > 1;
-
-    // Determine tactical decision
-    type TacticalDecision = 'stand_and_fight' | 'hit_and_run' | 'engage' | 'retreat';
-    let tacticalDecision: TacticalDecision = 'engage';
-
-    // Check if enemy is in attack range from current position
-    const currentAttackDist = visibleEnemy
-      ? octileDistance(scout.position.q, scout.position.r, visibleEnemy.position.q, visibleEnemy.position.r)
-      : Infinity;
-    const inAttackRange = currentAttackDist <= scout.stats.rng;
-
-    // FALLBACK: If enemy is in attack range but we couldn't get their stats, still attack
-    if (visibleEnemy && inAttackRange && !enemyStats) {
-      tacticalDecision = 'stand_and_fight';
-    } else if (visibleEnemy && enemyStats) {
-      const survival = calculateSurvival(
-        { atk: scout.stats.atk, hp: scout.stats.hp, def: scout.stats.def },
-        enemyStats
-      );
-
-      const hpPercent = scout.stats.hp / scout.stats.maxHp;
-
-      if (inAttackRange) {
-        if (survival.canWin && !isOutnumbered) {
-          // Can kill before dying and not outnumbered -> stand and fight
-          tacticalDecision = 'stand_and_fight';
-        } else if (hpPercent < 0.3 || (isOutnumbered && hpPercent < 0.5)) {
-          // Low health or outnumbered with moderate health -> hit and run
-          tacticalDecision = 'hit_and_run';
-        } else if (!survival.canWin && survival.hitsToDie <= 2) {
-          // Will die in 1-2 hits -> hit and run
-          tacticalDecision = 'hit_and_run';
-        } else {
-          // Default: stand and fight if in range
-          tacticalDecision = 'stand_and_fight';
+    // Check for enemies in attack range - attack closest one
+    let closestEnemy: { position: { q: number; r: number }; dist: number } | null = null;
+    for (const enemy of enemies) {
+      const dist = chebyshevDistance(scout.position.q, scout.position.r, enemy.position.q, enemy.position.r);
+      if (dist <= scout.stats.rng) {
+        if (!closestEnemy || dist < closestEnemy.dist) {
+          closestEnemy = { position: enemy.position, dist };
         }
-      } else {
-        // Not in range - engage normally
-        tacticalDecision = 'engage';
       }
     }
 
-    // Execute tactical decision
-    if (tacticalDecision === 'stand_and_fight' && visibleEnemy) {
-      // Stay in place and attack
-      attackTarget = visibleEnemy.position;
+    if (closestEnemy) {
+      // Enemy in range - attack them, don't move
+      attackTarget = closestEnemy.position;
       movePath = [];
-    } else if (tacticalDecision === 'hit_and_run' && visibleEnemy) {
-      // Attack first, then retreat
-      attackTarget = visibleEnemy.position;
-
-      // Find retreat direction (away from enemy)
-      const retreatDir = {
-        dq: scout.position.q - visibleEnemy.position.q,
-        dr: scout.position.r - visibleEnemy.position.r
-      };
-      const mag = Math.sqrt(retreatDir.dq ** 2 + retreatDir.dr ** 2) || 1;
-      retreatDir.dq = Math.round(retreatDir.dq / mag);
-      retreatDir.dr = Math.round(retreatDir.dr / mag);
-
-      // Find best retreat tile
-      const retreatTiles: { q: number; r: number; score: number }[] = [];
-      for (let dq = -scout.stats.mov; dq <= scout.stats.mov; dq++) {
-        for (let dr = -scout.stats.mov; dr <= scout.stats.mov; dr++) {
-          const nq = scout.position.q + dq;
-          const nr = scout.position.r + dr;
-          if (nq >= 0 && nq < gs.mapWidth && nr >= 0 && nr < gs.mapHeight) {
-            const tile = gs.grid[nr][nq];
-            const tileKey = `${nq},${nr}`;
-            if (tile.terrain !== 'water' && !occupied.has(tileKey)) {
-              // Score based on distance from enemy and alignment with retreat direction
-              const enemyDist = octileDistance(nq, nr, visibleEnemy.position.q, visibleEnemy.position.r);
-              const alignScore = (dq * retreatDir.dq + dr * retreatDir.dr);
-              retreatTiles.push({ q: nq, r: nr, score: enemyDist * 2 + alignScore });
-            }
-          }
-        }
-      }
-
-      if (retreatTiles.length > 0) {
-        retreatTiles.sort((a, b) => b.score - a.score);
-        const retreatDest = retreatTiles[0];
-        const retreatPath = findPath(gs.grid, scout.position.q, scout.position.r, retreatDest.q, retreatDest.r, scout.stats.mov + 2, occupied);
-        if (retreatPath && retreatPath.length > 1) {
-          movePath = truncatePathToMovement(retreatPath, gs.grid, scout.stats.mov);
-        }
-      }
-    } else if (!attackTarget && targetPos) {
-      // Path toward target
+    } else {
+      // No enemy in range - charge toward enemy TC
       const fullPath = findPath(
         gs.grid,
         scout.position.q, scout.position.r,
         targetPos.q, targetPos.r,
-        scout.stats.mov + 10, // Extra range for pathfinding
+        scout.stats.mov + 10,
         occupied
       );
 
       if (fullPath && fullPath.length > 1) {
-        // Truncate to MOV stat (use full extent)
         movePath = truncatePathToMovement(fullPath, gs.grid, scout.stats.mov);
 
-        // PATH ENGAGEMENT: Check for enemies along the path and stop to engage them
-        // This prevents scouts from running past enemies
+        // Check for enemies along the path - stop and attack if found
         for (let i = 1; i < movePath.length; i++) {
           const pathTile = movePath[i];
           for (const enemy of enemies) {
-            const distToEnemy = octileDistance(pathTile.q, pathTile.r, enemy.position.q, enemy.position.r);
+            const distToEnemy = chebyshevDistance(pathTile.q, pathTile.r, enemy.position.q, enemy.position.r);
             if (distToEnemy <= scout.stats.rng) {
-              // Found enemy in range from this path tile - truncate path here and engage
               movePath = movePath.slice(0, i + 1);
               attackTarget = enemy.position;
               break;
@@ -1432,27 +1293,12 @@ export const useGameStore = create<GameStore>((set, get) => ({
           }
           if (attackTarget) break;
         }
-
-        // If no path engagement, check if enemy is in attack range from final position
-        if (!attackTarget) {
-          const finalPos = movePath[movePath.length - 1];
-          if (visibleEnemy) {
-            const attackDist = octileDistance(finalPos.q, finalPos.r, visibleEnemy.position.q, visibleEnemy.position.r);
-            if (attackDist <= scout.stats.rng) {
-              attackTarget = visibleEnemy.position;
-            }
-          }
-        }
       }
-    } else if (tacticalDecision === 'engage' || !visibleEnemy) {
-      // SMART EXPLORATION: Move toward enemy starting zone with edge awareness
-      // Player1 starts near (2,2), Player2 starts near (mapWidth-3, mapHeight-3)
-      const enemyZone = scout.owner === 'player1'
-        ? { q: gs.mapWidth - 3, r: gs.mapHeight - 3 }
-        : { q: 2, r: 2 };
-      const mapCenter = { q: gs.mapWidth / 2, r: gs.mapHeight / 2 };
+    }
 
-      // Compute all reachable tiles within MOV range (use full extent)
+    // FALLBACK: If no path to target, use full MOV to get as close as possible
+    if (movePath.length <= 1 && !attackTarget) {
+      // Compute all reachable tiles using full movement range
       const reachableTiles = computeMoveTilesForUnit(gs, scout);
       const reachableList = Array.from(reachableTiles).map(key => {
         const [q, r] = key.split(',').map(Number);
@@ -1460,89 +1306,19 @@ export const useGameStore = create<GameStore>((set, get) => ({
       });
 
       if (reachableList.length > 0) {
-        // Score each tile: prefer enemy direction, avoid edges, slight randomness
+        // Pick tile closest to target that uses as much movement as possible
         const scoredTiles = reachableList.map(tile => {
-          let score = 0;
-          // Distance to enemy zone (closer = better)
-          const enemyDist = octileDistance(tile.q, tile.r, enemyZone.q, enemyZone.r);
-          const currentEnemyDist = octileDistance(scout.position.q, scout.position.r, enemyZone.q, enemyZone.r);
-          score += (currentEnemyDist - enemyDist) * 3; // Reward moving toward enemy
-
-          // Distance from edges (penalize being near map boundaries)
-          const edgeMargin = 2;
-          const distFromEdge = Math.min(
-            tile.q, tile.r,
-            gs.mapWidth - 1 - tile.q,
-            gs.mapHeight - 1 - tile.r
-          );
-          if (distFromEdge < edgeMargin) {
-            score -= (edgeMargin - distFromEdge) * 2; // Penalize edges
-          }
-
-          // Slight preference toward map center when exploring
-          const centerDist = octileDistance(tile.q, tile.r, mapCenter.q, mapCenter.r);
-          const currentCenterDist = octileDistance(scout.position.q, scout.position.r, mapCenter.q, mapCenter.r);
-          if (currentCenterDist > centerDist) {
-            score += 1; // Small bonus for moving toward center
-          }
-
-          // Add small random factor for variety
-          score += Math.random() * 2;
-
-          return { tile, score };
+          const distToTarget = octileDistance(tile.q, tile.r, targetPos.q, targetPos.r);
+          const distFromStart = octileDistance(tile.q, tile.r, scout.position.q, scout.position.r);
+          // Prioritize: closer to target + farther from start (use full MOV)
+          return { tile, score: -distToTarget + distFromStart * 0.5 };
         });
-
-        // Pick the best-scoring tile
         scoredTiles.sort((a, b) => b.score - a.score);
-        const bestDest = scoredTiles[0].tile;
+        const bestTile = scoredTiles[0].tile;
 
-        // Pathfind to destination
-        const fullPath = findPath(
-          gs.grid,
-          scout.position.q, scout.position.r,
-          bestDest.q, bestDest.r,
-          scout.stats.mov + 2,
-          occupied
-        );
-
-        if (fullPath && fullPath.length > 1) {
-          movePath = truncatePathToMovement(fullPath, gs.grid, scout.stats.mov);
-
-          // PATH ENGAGEMENT during exploration: Check for enemies along the path
-          for (let i = 1; i < movePath.length; i++) {
-            const pathTile = movePath[i];
-            for (const enemy of enemies) {
-              const distToEnemy = octileDistance(pathTile.q, pathTile.r, enemy.position.q, enemy.position.r);
-              if (distToEnemy <= scout.stats.rng) {
-                // Found enemy in range - truncate path and engage
-                movePath = movePath.slice(0, i + 1);
-                attackTarget = enemy.position;
-                break;
-              }
-            }
-            if (attackTarget) break;
-          }
-        }
-      }
-    }
-
-    // FALLBACK: If no movement path found and not attacking, find any adjacent passable tile
-    if (movePath.length <= 1 && !attackTarget) {
-      const adjacentOffsets = [
-        { dq: 1, dr: 0 }, { dq: -1, dr: 0 }, { dq: 0, dr: 1 }, { dq: 0, dr: -1 },
-        { dq: 1, dr: 1 }, { dq: 1, dr: -1 }, { dq: -1, dr: 1 }, { dq: -1, dr: -1 }
-      ];
-      const shuffled = adjacentOffsets.sort(() => Math.random() - 0.5);
-      for (const offset of shuffled) {
-        const nq = scout.position.q + offset.dq;
-        const nr = scout.position.r + offset.dr;
-        if (nq >= 0 && nq < gs.mapWidth && nr >= 0 && nr < gs.mapHeight) {
-          const tile = gs.grid[nr][nq];
-          const tileKey = `${nq},${nr}`;
-          if (tile.terrain !== 'water' && !occupied.has(tileKey)) {
-            movePath = [{ q: scout.position.q, r: scout.position.r }, { q: nq, r: nr }];
-            break;
-          }
+        const pathToBest = findPath(gs.grid, scout.position.q, scout.position.r, bestTile.q, bestTile.r, scout.stats.mov + 2, occupied);
+        if (pathToBest && pathToBest.length > 1) {
+          movePath = truncatePathToMovement(pathToBest, gs.grid, scout.stats.mov);
         }
       }
     }
@@ -1557,9 +1333,6 @@ export const useGameStore = create<GameStore>((set, get) => ({
     }
 
     // Execute Scout action with camera focus
-    // For hit-and-run: attack first, then retreat (store retreat path for after attack)
-    const isHitAndRun = tacticalDecision === 'hit_and_run' && attackTarget && movePath.length > 1;
-
     set({
       gameState: gs,
       selectedHeroId: null,
@@ -1567,14 +1340,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       onCameraArrived: () => {
         set({ onCameraArrived: null });
         setTimeout(() => {
-          if (isHitAndRun) {
-            // HIT-AND-RUN: Attack first, then retreat
-            // Store retreat path in queued actions for after attack
-            const qa = { ...get().queuedActions };
-            qa[scoutId] = { movePath: movePath, actionOrder: 'attack-first' };
-            set({ queuedActions: qa });
-            get().executeScoutAttack(scoutId, attackTarget!);
-          } else if (movePath.length > 1) {
+          if (movePath.length > 1) {
             // Normal move (then attack after if target)
             set({
               moveAnimation: {
@@ -1998,7 +1764,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
         id: 'pouch',
         name: 'Resource Pouch',
         type: 'resourcePouch',
-        maxResourceAmount: 5,
+        maxResourceAmount: 8,
         resources: {}
       };
     }
@@ -2032,7 +1798,6 @@ export const useGameStore = create<GameStore>((set, get) => ({
       pouch.resources[resourceType] = (pouch.resources[resourceType] || 0) + gatheredAmount;
       tile.resourceAmount! -= gatheredAmount;
     }
-    hero.hasMoved = true;
 
     set({
       gameState: gs,
@@ -2525,6 +2290,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
   deselectAll: () => {
     set({
       selectedHeroId: null,
+      selectedUnitId: null,
       selectedBuildingId: null,
       actionMode: 'idle',
       moveTiles: new Set(),

@@ -11,64 +11,101 @@ const GameBoard = dynamic(() => import('@/components/game/GameBoard'), {
   loading: () => <div className="w-full h-full bg-[#1e2024]" />
 });
 
-// Global audio functions for SFX (accessible from other components)
-let playSfxSelect: () => void = () => {};
-let playSfxBlur: () => void = () => {};
-export const playSelectSound = () => playSfxSelect();
-export const playBlurSound = () => playSfxBlur();
+// Global audio refs and functions for SFX (accessible from other components)
+let bgmAudio: HTMLAudioElement | null = null;
+let sfxSelectAudio: HTMLAudioElement | null = null;
+let sfxBlurAudio: HTMLAudioElement | null = null;
+
+export const playSelectSound = () => {
+  if (sfxSelectAudio) {
+    sfxSelectAudio.currentTime = 0;
+    sfxSelectAudio.play().catch(() => {});
+  }
+};
+export const playBlurSound = () => {
+  if (sfxBlurAudio) {
+    sfxBlurAudio.currentTime = 0;
+    sfxBlurAudio.play().catch(() => {});
+  }
+};
+
+type LoadingState = 'idle' | 'loading' | 'ready';
 
 export default function Home() {
-  const [started, setStarted] = useState(false);
+  const [loadingState, setLoadingState] = useState<LoadingState>('idle');
+  const [loadProgress, setLoadProgress] = useState(0);
   const [mounted, setMounted] = useState(false);
   const initGame = useGameStore(s => s.initGame);
   const gameState = useGameStore(s => s.gameState);
 
-  // Audio refs
-  const bgmRef = useRef<HTMLAudioElement | null>(null);
-  const sfxSelectRef = useRef<HTMLAudioElement | null>(null);
-  const sfxBlurRef = useRef<HTMLAudioElement | null>(null);
-
-  // Wait for client mount before rendering Canvas
+  // Wait for client mount
   useEffect(() => {
     setMounted(true);
   }, []);
 
-  // Set up global SFX functions
-  useEffect(() => {
-    playSfxSelect = () => {
-      if (sfxSelectRef.current) {
-        sfxSelectRef.current.currentTime = 0;
-        sfxSelectRef.current.play().catch(() => {});
-      }
-    };
-    playSfxBlur = () => {
-      if (sfxBlurRef.current) {
-        sfxBlurRef.current.currentTime = 0;
-        sfxBlurRef.current.play().catch(() => {});
-      }
-    };
-  }, []);
+  const handleStart = useCallback(async () => {
+    setLoadingState('loading');
+    setLoadProgress(0);
 
-  const handleStart = useCallback(() => {
-    // Play select sound
-    if (sfxSelectRef.current) {
-      sfxSelectRef.current.currentTime = 0;
-      sfxSelectRef.current.play().catch(() => {});
-    }
-    // Start BGM
-    if (bgmRef.current) {
-      bgmRef.current.volume = 0.3;
-      bgmRef.current.play().catch(() => {});
-    }
+    // Create audio elements
+    const bgm = new Audio('/bgm.mp3');
+    const sfxSelect = new Audio('/sfxInputSelect.mp3');
+    const sfxBlur = new Audio('/sfxInputBlur.mp3');
+
+    bgm.loop = true;
+    bgm.volume = 0.15;
+    sfxSelect.volume = 0.1;
+    sfxBlur.volume = 0.1;
+
+    // Track loading progress
+    let loaded = 0;
+    const totalAssets = 3;
+
+    const onLoad = () => {
+      loaded++;
+      setLoadProgress(Math.round((loaded / totalAssets) * 100));
+    };
+
+    // Load all audio files
+    await Promise.all([
+      new Promise<void>((resolve) => {
+        bgm.addEventListener('canplaythrough', () => { onLoad(); resolve(); }, { once: true });
+        bgm.load();
+      }),
+      new Promise<void>((resolve) => {
+        sfxSelect.addEventListener('canplaythrough', () => { onLoad(); resolve(); }, { once: true });
+        sfxSelect.load();
+      }),
+      new Promise<void>((resolve) => {
+        sfxBlur.addEventListener('canplaythrough', () => { onLoad(); resolve(); }, { once: true });
+        sfxBlur.load();
+      }),
+    ]);
+
+    // Store refs globally
+    bgmAudio = bgm;
+    sfxSelectAudio = sfxSelect;
+    sfxBlurAudio = sfxBlur;
+
+    // Initialize game
     initGame(16, 16);
-    setStarted(true);
+
+    // Small delay for smoother transition
+    await new Promise(r => setTimeout(r, 300));
+
+    // Play select sound and start BGM
+    sfxSelect.play().catch(() => {});
+    bgm.play().catch(() => {});
+
+    setLoadingState('ready');
   }, [initGame]);
 
   if (!mounted) {
     return <div className="h-screen w-screen bg-black" />;
   }
 
-  if (!started || !gameState) {
+  // Landing screen
+  if (loadingState === 'idle') {
     return (
       <div className="h-screen w-screen bg-black flex items-center justify-center">
         <div className="text-center font-mono">
@@ -88,13 +125,29 @@ export default function Home() {
     );
   }
 
+  // Loading screen
+  if (loadingState === 'loading' || !gameState) {
+    return (
+      <div className="h-screen w-screen bg-black flex items-center justify-center">
+        <div className="text-center font-mono w-64">
+          <h1 className="text-2xl font-bold text-cyan-400 mb-6 tracking-[0.2em] uppercase">
+            Loading
+          </h1>
+          <div className="w-full h-2 bg-gray-800 rounded-full overflow-hidden mb-2">
+            <div
+              className="h-full bg-cyan-500 transition-all duration-300"
+              style={{ width: `${loadProgress}%` }}
+            />
+          </div>
+          <p className="text-gray-500 text-xs">{loadProgress}%</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Game screen
   return (
     <div className="h-screen w-screen bg-black relative overflow-hidden">
-      {/* Audio elements */}
-      <audio ref={bgmRef} src="/bgm.mp3" loop preload="auto" />
-      <audio ref={sfxSelectRef} src="/sfxInputSelect.mp3" preload="auto" />
-      <audio ref={sfxBlurRef} src="/sfxInputBlur.mp3" preload="auto" />
-
       <GameBoard />
       <GameHUD />
     </div>
